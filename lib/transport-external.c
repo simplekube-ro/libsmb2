@@ -313,6 +313,23 @@ ext_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout)
         return NULL;
 }
 
+/*
+ * Advance external-transport timer-driven work. The backend's deadline lives in
+ * smb2->next_timeout, which a QUIC backend (#12) publishes; #11 delivers the
+ * tick and #12 fills in the handshake/idle/loss-recovery work. Re-running the
+ * per-request pdu timeouts here is harmless and keeps request timeouts honored
+ * on the external path even when no socket readiness arrives. Touches no
+ * application callback, so it needs no NULL guards.
+ */
+static int
+ext_timer(struct smb2_context *smb2)
+{
+        if (smb2->timeout) {
+                smb2_timeout_pdus(smb2);
+        }
+        return 0;
+}
+
 const struct smb2_transport_ops smb2_external_transport_ops = {
         ext_connect,
         ext_service,
@@ -321,4 +338,5 @@ const struct smb2_transport_ops smb2_external_transport_ops = {
         ext_which_events,
         ext_get_fd,
         ext_get_fds,
+        ext_timer,
 };

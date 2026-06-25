@@ -682,6 +682,7 @@ int smb2_get_credit_charge(struct smb2_context *smb2, struct smb2_pdu *pdu);
 int smb2_transport_is_connected(struct smb2_context *smb2);
 void smb2_change_events(struct smb2_context *smb2, t_socket fd, int events);
 void smb2_timeout_pdus(struct smb2_context *smb2);
+int smb2_next_timeout_ms(struct smb2_context *smb2);
 
 struct dcerpc_context;
 int dcerpc_set_uint8(struct dcerpc_context *ctx, struct smb2_iovec *iov,

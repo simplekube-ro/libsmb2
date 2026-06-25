@@ -1680,6 +1680,7 @@ const struct smb2_transport_ops smb2_tcp_transport_ops = {
         tcp_which_events,
         tcp_get_fd,
         tcp_get_fds,
+        NULL,            /* timer: TCP has no work beyond smb2_timeout_pdus */
 };
 
 /*
@@ -1728,10 +1729,25 @@ smb2_get_fd(struct smb2_context *smb2)
 const t_socket *
 smb2_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout)
 {
+        const t_socket *fds;
+        int dl;
+
         if (smb2->transport == NULL || smb2->transport->get_fds == NULL) {
                 *fd_count = 0;
                 *timeout = -1;
                 return NULL;
         }
-        return smb2->transport->get_fds(smb2, fd_count, timeout);
+        fds = smb2->transport->get_fds(smb2, fd_count, timeout);
+
+        /* Narrow (never widen) the backend's poll timeout by the engine's next
+         * pending deadline so the event loop wakes in time to run
+         * smb2_service_timeout(). With the default smb2_set_timeout(0) and no
+         * backend-published next_timeout, smb2_next_timeout_ms() returns -1 and
+         * *timeout is left exactly as the backend produced it -- so idle TCP
+         * keeps its byte-for-byte prior behaviour (no extra wakeups). */
+        dl = smb2_next_timeout_ms(smb2);
+        if (dl >= 0 && (*timeout < 0 || dl < *timeout)) {
+                *timeout = dl;
+        }
+        return fds;
 }
