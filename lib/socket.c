@@ -920,139 +920,22 @@ smb2_close_connecting_fd(struct smb2_context *smb2, t_socket fd)
         }
 }
 
+/*
+ * Public service entry point for a specific fd. This is a thin dispatcher that
+ * routes the read/write event handling through the registered transport
+ * backend's service operation (for the default TCP backend this resolves to
+ * tcp_service below, which carries the multi-fd Happy-Eyeballs connect
+ * semantics and drives the receive state machine).
+ */
 int
 smb2_service_fd(struct smb2_context *smb2, t_socket fd, int revents)
 {
-        int ret = 0;
-
-        if (!SMB2_VALID_SOCKET(fd)) {
-                /* Connect to a new addr in parallel */
-                if (smb2->next_addrinfo != NULL) {
-                    int err = smb2_connect_async_next_addr(smb2,
-                                                           smb2->next_addrinfo);
-                    return err == 0 ? 0 : -1;
-                }
-                goto out;
-        } else if (fd != smb2->fd) {
-                int fd_found = 0;
-                size_t i;
-                for (i = 0; i < smb2->connecting_fds_count; ++i) {
-                        if (fd == smb2->connecting_fds[i])
-                        {
-                                fd_found = 1;
-                                break;
-                        }
-                }
-                if (fd_found == 0) {
-                        /* Not an error, this can happen if more than one
-                         * connecting fds had POLLOUT events. In that case,
-                         * only the first one is connected and all other FDs
-                         * are dropped. */
-                        return 0;
-                }
+        if (smb2->transport == NULL || smb2->transport->service == NULL) {
+                smb2_set_error(smb2, "No transport service operation "
+                               "registered.");
+                return -1;
         }
-
-        if (revents & POLLERR) {
-                int err = 0;
-                socklen_t err_size = sizeof(err);
-
-                if (!SMB2_VALID_SOCKET(smb2->fd) && smb2->next_addrinfo != NULL) {
-                        /* Connecting fd failed, try to connect to the next addr */
-                        smb2_close_connecting_fd(smb2, fd);
-
-                        err = smb2_connect_async_next_addr(smb2, smb2->next_addrinfo);
-                        /* error already set by connect_async_ai() */
-                        if (err == 0) {
-                                return 0;
-                        }
-                } else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &err_size) != 0 || err != 0) {
-                        if (err == 0) {
-                                err = errno;
-                        }
-                        smb2_set_error(smb2, "smb2_service: socket error "
-                                        "%s(%d).",
-                                        strerror(err), err);
-                } else {
-                        smb2_set_error(smb2, "smb2_service: POLLERR, "
-                                        "Unknown socket error.");
-                }
-
-                if (smb2->connect_cb) {
-                        smb2->connect_cb(smb2, err, NULL, smb2->connect_data);
-                        smb2->connect_cb = NULL;
-                }
-                ret = -1;
-                goto out;
-        }
-        if (revents & POLLHUP) {
-                smb2_set_error(smb2, "smb2_service: POLLHUP, "
-                                "socket error.");
-                ret = -1;
-                goto out;
-        }
-
-        if (!SMB2_VALID_SOCKET(smb2->fd) && revents & POLLOUT) {
-                int err = 0;
-                socklen_t err_size = sizeof(err);
-
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &err_size) != 0 || err != 0) {
-                        if (err == 0) {
-                                err = errno;
-                        }
-                        if (smb2->next_addrinfo != NULL) {
-                                /* Connecting fd failed, try to connect to the next addr */
-                                smb2_close_connecting_fd(smb2, fd);
-
-                                err = smb2_connect_async_next_addr(smb2, smb2->next_addrinfo);
-                                /* error already set by connect_async_ai() */
-                                if (err == 0) {
-                                        return 0;
-                                }
-                        } else {
-                                smb2_set_error(smb2, "smb2_service: socket error "
-                                                "%s(%d) while connecting.",
-                                                strerror(err), err);
-                        }
-
-                        if (smb2->connect_cb) {
-                                smb2->connect_cb(smb2, err,
-                                                 NULL, smb2->connect_data);
-                                smb2->connect_cb = NULL;
-                        }
-                        ret = -1;
-                        goto out;
-                }
-                smb2->fd = fd;
-
-                smb2_close_connecting_fds(smb2);
-
-                smb2_change_events(smb2, smb2->fd, smb2_which_events(smb2));
-                if (smb2->connect_cb) {
-                        smb2->connect_cb(smb2, 0, NULL,        smb2->connect_data);
-                        smb2->connect_cb = NULL;
-                }
-                goto out;
-        }
-
-        if (revents & POLLIN) {
-                if (smb2_read_from_socket(smb2) != 0) {
-                        ret = -1;
-                        goto out;
-                }
-        }
-
-        if (revents & POLLOUT && smb2->outqueue != NULL) {
-                if (smb2_write_to_socket(smb2) != 0) {
-                        ret = -1;
-                        goto out;
-                }
-        }
-
- out:
-        if (smb2->timeout) {
-                smb2_timeout_pdus(smb2);
-        }
-        return ret;
+        return smb2->transport->service(smb2, fd, revents);
 }
 
 int
@@ -1467,18 +1350,148 @@ void smb2_change_events(struct smb2_context *smb2, t_socket fd, int events)
 /*
  * TCP transport backend.
  *
- * Most of these are thin wrappers that delegate to the existing TCP functions
- * above. The connect operation is now live: the public smb2_connect_async()
- * entry point dispatches through smb2->transport->connect, which resolves to
- * tcp_connect() (the real Happy-Eyeballs implementation above). The remaining
- * wrappers are registered as the default transport but are not yet on the hot
- * path; their existing call-sites still call the concrete functions directly,
- * so behavior is unchanged.
+ * The connect, service and poll-surface operations are live: their public
+ * entry points (smb2_connect_async / smb2_service_fd / smb2_which_events /
+ * smb2_get_fd / smb2_get_fds) dispatch through smb2->transport, which resolves
+ * to the tcp_* implementations here. tcp_service is the canonical workhorse
+ * that carries the multi-fd Happy-Eyeballs connect semantics and drives the
+ * receive state machine. The remaining wrappers are registered as the default
+ * transport but are not yet on the hot path; their existing call-sites still
+ * call the concrete functions directly, so behavior is unchanged.
  */
 static int
-tcp_service(struct smb2_context *smb2, int revents)
+tcp_service(struct smb2_context *smb2, t_socket fd, int revents)
 {
-        return smb2_service(smb2, revents);
+        int ret = 0;
+
+        if (!SMB2_VALID_SOCKET(fd)) {
+                /* Connect to a new addr in parallel */
+                if (smb2->next_addrinfo != NULL) {
+                    int err = smb2_connect_async_next_addr(smb2,
+                                                           smb2->next_addrinfo);
+                    return err == 0 ? 0 : -1;
+                }
+                goto out;
+        } else if (fd != smb2->fd) {
+                int fd_found = 0;
+                size_t i;
+                for (i = 0; i < smb2->connecting_fds_count; ++i) {
+                        if (fd == smb2->connecting_fds[i])
+                        {
+                                fd_found = 1;
+                                break;
+                        }
+                }
+                if (fd_found == 0) {
+                        /* Not an error, this can happen if more than one
+                         * connecting fds had POLLOUT events. In that case,
+                         * only the first one is connected and all other FDs
+                         * are dropped. */
+                        return 0;
+                }
+        }
+
+        if (revents & POLLERR) {
+                int err = 0;
+                socklen_t err_size = sizeof(err);
+
+                if (!SMB2_VALID_SOCKET(smb2->fd) && smb2->next_addrinfo != NULL) {
+                        /* Connecting fd failed, try to connect to the next addr */
+                        smb2_close_connecting_fd(smb2, fd);
+
+                        err = smb2_connect_async_next_addr(smb2, smb2->next_addrinfo);
+                        /* error already set by connect_async_ai() */
+                        if (err == 0) {
+                                return 0;
+                        }
+                } else if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &err_size) != 0 || err != 0) {
+                        if (err == 0) {
+                                err = errno;
+                        }
+                        smb2_set_error(smb2, "smb2_service: socket error "
+                                        "%s(%d).",
+                                        strerror(err), err);
+                } else {
+                        smb2_set_error(smb2, "smb2_service: POLLERR, "
+                                        "Unknown socket error.");
+                }
+
+                if (smb2->connect_cb) {
+                        smb2->connect_cb(smb2, err, NULL, smb2->connect_data);
+                        smb2->connect_cb = NULL;
+                }
+                ret = -1;
+                goto out;
+        }
+        if (revents & POLLHUP) {
+                smb2_set_error(smb2, "smb2_service: POLLHUP, "
+                                "socket error.");
+                ret = -1;
+                goto out;
+        }
+
+        if (!SMB2_VALID_SOCKET(smb2->fd) && revents & POLLOUT) {
+                int err = 0;
+                socklen_t err_size = sizeof(err);
+
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &err_size) != 0 || err != 0) {
+                        if (err == 0) {
+                                err = errno;
+                        }
+                        if (smb2->next_addrinfo != NULL) {
+                                /* Connecting fd failed, try to connect to the next addr */
+                                smb2_close_connecting_fd(smb2, fd);
+
+                                err = smb2_connect_async_next_addr(smb2, smb2->next_addrinfo);
+                                /* error already set by connect_async_ai() */
+                                if (err == 0) {
+                                        return 0;
+                                }
+                        } else {
+                                smb2_set_error(smb2, "smb2_service: socket error "
+                                                "%s(%d) while connecting.",
+                                                strerror(err), err);
+                        }
+
+                        if (smb2->connect_cb) {
+                                smb2->connect_cb(smb2, err,
+                                                 NULL, smb2->connect_data);
+                                smb2->connect_cb = NULL;
+                        }
+                        ret = -1;
+                        goto out;
+                }
+                smb2->fd = fd;
+
+                smb2_close_connecting_fds(smb2);
+
+                smb2_change_events(smb2, smb2->fd, smb2_which_events(smb2));
+                if (smb2->connect_cb) {
+                        smb2->connect_cb(smb2, 0, NULL,        smb2->connect_data);
+                        smb2->connect_cb = NULL;
+                }
+                goto out;
+        }
+
+        if (revents & POLLIN) {
+                if (smb2_read_from_socket(smb2) != 0) {
+                        ret = -1;
+                        goto out;
+                }
+        }
+
+        if (revents & POLLOUT && smb2->outqueue != NULL) {
+                if (smb2_write_to_socket(smb2) != 0) {
+                        ret = -1;
+                        goto out;
+                }
+        }
+
+ out:
+        if (smb2->timeout) {
+                smb2_timeout_pdus(smb2);
+        }
+        return ret;
 }
 
 /*
