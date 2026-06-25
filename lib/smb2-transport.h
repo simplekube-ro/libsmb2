@@ -41,7 +41,7 @@ struct smb2_context;
  * below (this can only happen for a future external backend, never for TCP), so
  * the TCP happy path is byte-for-byte the prior control flow.
  *
- * The seven operations (entry point -> TCP impl, in lib/socket.c unless noted):
+ * The operations (entry point -> TCP impl, in lib/socket.c unless noted):
  *
  *   connect       smb2_connect_async  -> tcp_connect
  *                 Begin async connection establishment to `server`; invokes `cb`
@@ -83,6 +83,13 @@ struct smb2_context;
  *                 *fd_count = 0 when no op is registered. Event loops that need
  *                 parallel connect MUST use this rather than get_fd.
  *
+ *   timer         smb2_service_timeout -> (TCP: none / external: ext_timer)
+ *                 Advance backend timer-driven work (handshake/idle/
+ *                 loss-recovery for an external backend). Optional; a NULL slot
+ *                 means the backend has no timer work beyond the engine's
+ *                 per-request smb2_timeout_pdus(). Returns 0 on success, -1 on
+ *                 error.
+ *
  * Note: t_socket is provided by compat.h and smb2_command_cb by
  * smb2/libsmb2.h; both must be included before this header.
  */
@@ -98,10 +105,14 @@ struct smb2_transport_ops {
         t_socket (*get_fd)(struct smb2_context *smb2);
         const t_socket *(*get_fds)(struct smb2_context *smb2,
                                    size_t *fd_count, int *timeout);
+        int      (*timer)(struct smb2_context *smb2);
 };
 
 /* Default TCP transport backend. */
 extern const struct smb2_transport_ops smb2_tcp_transport_ops;
+
+/* External (application-supplied) transport backend (Stage 2). */
+extern const struct smb2_transport_ops smb2_external_transport_ops;
 
 #ifdef __cplusplus
 }

@@ -75,6 +75,7 @@ smb2_get_max_read_size
 smb2_get_max_write_size
 smb2_get_opaque
 smb2_get_passthrough
+smb2_get_timeout
 smb2_init_context
 smb2_mkdir
 smb2_mkdir_async
@@ -108,6 +109,7 @@ smb2_select_tree_id
 smb2_serve_port
 smb2_service
 smb2_service_fd
+smb2_service_timeout
 smb2_set_authentication
 smb2_set_security_mode
 smb2_set_version

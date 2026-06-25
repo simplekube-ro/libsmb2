@@ -80,12 +80,27 @@ static int wait_for_reply(struct smb2_context *smb2,
                 if (smb2->timeout) {
                         smb2_timeout_pdus(smb2);
                 }
-		if (!SMB2_VALID_SOCKET(smb2->fd) && ((time(NULL) - t) > (smb2->timeout)))
+		if (!smb2_transport_is_connected(smb2) && ((time(NULL) - t) > (smb2->timeout)))
 		{
 			smb2_set_error(smb2, "Timeout expired and no connection exists\n");
 			return -1;
-		}                
+		}
                 if (pfd.revents == 0) {
+                        /* A transport with no pollable fd (the external
+                         * backend) gets revents == 0 from poll(fd == -1), so
+                         * drive its read/write state machine directly via the
+                         * which_events mask. The TCP path keeps its existing
+                         * "nothing ready, loop again" behaviour. */
+                        if (!SMB2_VALID_SOCKET(pfd.fd) &&
+                            smb2_transport_is_connected(smb2)) {
+                                if (smb2_service(smb2,
+                                                 smb2_which_events(smb2)) < 0) {
+                                        smb2_set_error(smb2, "smb2_service "
+                                                "failed with : %s\n",
+                                                smb2_get_error(smb2));
+                                        return -1;
+                                }
+                        }
                         continue;
                 }
 		if (smb2_service(smb2, pfd.revents) < 0) {
@@ -858,7 +873,7 @@ int smb2_echo(struct smb2_context *smb2)
         struct sync_cb_data *cb_data;
         int rc = 0;
 
-        if (!SMB2_VALID_SOCKET(smb2->fd)) {
+        if (!smb2_transport_is_connected(smb2)) {
                 smb2_set_error(smb2, "Not Connected to Server");
                 return -ENOMEM;
         }
@@ -958,7 +973,7 @@ smb2_share_enum_sync(struct smb2_context *smb2, enum SHARE_INFO_enum level)
         struct sync_cb_data *cb_data;
         int rc = 0;
 
-        if (!SMB2_VALID_SOCKET(smb2->fd)) {
+        if (!smb2_transport_is_connected(smb2)) {
                 smb2_set_error(smb2, "Not Connected to Server");
                 return NULL;
         }

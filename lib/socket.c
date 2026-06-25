@@ -100,6 +100,7 @@
 #endif
 
 #include <errno.h>
+#include <limits.h>
 
 #include "compat.h"
 
@@ -171,7 +172,7 @@ smb2_get_real_credit_charge_for_one_pdu(struct smb2_context *smb2, struct smb2_h
         return credits;
 }
 
-static int
+int
 smb2_get_credit_charge(struct smb2_context *smb2, struct smb2_pdu *pdu)
 {
         int credits = 0;
@@ -185,11 +186,21 @@ smb2_get_credit_charge(struct smb2_context *smb2, struct smb2_pdu *pdu)
 }
 
 int
+smb2_transport_is_connected(struct smb2_context *smb2)
+{
+        if (smb2->transport_type == SMB2_TRANSPORT_TCP) {
+                return SMB2_VALID_SOCKET(smb2->fd);
+        }
+        return smb2->ext_connected;
+}
+
+int
 smb2_write_to_socket(struct smb2_context *smb2)
 {
         struct smb2_pdu *pdu;
 
-        if (!SMB2_VALID_SOCKET(smb2->fd)) {
+        if (smb2->transport_type == SMB2_TRANSPORT_TCP &&
+            !SMB2_VALID_SOCKET(smb2->fd)) {
                 smb2_set_error(smb2, "trying to write but not connected");
                 return -1;
         }
@@ -907,6 +918,91 @@ smb2_read_from_buf(struct smb2_context *smb2)
         return smb2_read_data(smb2, smb2_readv_from_buf, 1);
 }
 
+/*
+ * read_func leaf for the external (application-supplied) transport backend.
+ * It pulls bytes from the app ext.recv callback into the first trimmed iovector
+ * supplied by the receive state machine, mirroring readv() semantics for a
+ * single contiguous buffer. The app recv callback is untrusted, so its return
+ * value is bounds-checked before it is handed back to smb2_read_data() which
+ * advances smb2->in.num_done by the returned count.
+ */
+static ssize_t
+smb2_recv_from_ext(struct smb2_context *smb2, const struct iovec *iov,
+                   int iovcnt)
+{
+        size_t want;
+        int ret;
+
+        if (smb2->ext.recv == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (iovcnt <= 0) {
+                return 0;
+        }
+
+        want = iov[0].iov_len;
+        if (want == 0) {
+                /* Defensively skip; a 0 return would be read as peer-close. */
+                return 0;
+        }
+        /* The callback takes an int length; clamp to INT_MAX. */
+        if (want > (size_t)INT_MAX) {
+                want = (size_t)INT_MAX;
+        }
+
+        ret = smb2->ext.recv(smb2->ext.userdata, iov[0].iov_base, want);
+        if (ret < 0) {
+                /* Preserve the callback's errno for the EAGAIN/EWOULDBLOCK
+                 * check in smb2_read_data(); do not clobber it. */
+                return -1;
+        }
+        if ((size_t)ret > want) {
+                /* A buggy/hostile callback must not be allowed to advance the
+                 * receive accounting past the buffer it was handed. */
+                smb2_set_error(smb2, "external recv returned more bytes (%d) "
+                               "than requested (%d)", ret, (int)want);
+                errno = EIO;
+                return -1;
+        }
+        return (ssize_t)ret;
+}
+
+/*
+ * Drive the receive state machine for the external transport. This mirrors
+ * smb2_read_from_socket() (SPL-init preamble + EAGAIN translation) but uses
+ * smb2_recv_from_ext as the byte source instead of readv(fd, ...).
+ */
+int
+smb2_read_from_ext(struct smb2_context *smb2)
+{
+        int count;
+
+        while (1) {
+                if (smb2->in.num_done == 0) {
+                        smb2->recv_state = SMB2_RECV_SPL;
+                        smb2->spl = 0;
+
+                        smb2_free_iovector(smb2, &smb2->in);
+                        if (smb2_add_iovector(smb2, &smb2->in,
+                                              (uint8_t *)&smb2->spl,
+                                              SMB2_SPL_SIZE, NULL) == NULL) {
+                                smb2_set_error(smb2, "Too many I/O vectors "
+                                               "when adding SPL");
+                                return -1;
+                        }
+                }
+
+                count = smb2_read_data(smb2, smb2_recv_from_ext, 0);
+                if (count == -EAGAIN) {
+                        return 0;
+                }
+                if (count) {
+                        return count;
+                }
+        }
+}
+
 static void
 smb2_close_connecting_fd(struct smb2_context *smb2, t_socket fd)
 {
@@ -1584,6 +1680,7 @@ const struct smb2_transport_ops smb2_tcp_transport_ops = {
         tcp_which_events,
         tcp_get_fd,
         tcp_get_fds,
+        NULL,            /* timer: TCP has no work beyond smb2_timeout_pdus */
 };
 
 /*
@@ -1632,10 +1729,25 @@ smb2_get_fd(struct smb2_context *smb2)
 const t_socket *
 smb2_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout)
 {
+        const t_socket *fds;
+        int dl;
+
         if (smb2->transport == NULL || smb2->transport->get_fds == NULL) {
                 *fd_count = 0;
                 *timeout = -1;
                 return NULL;
         }
-        return smb2->transport->get_fds(smb2, fd_count, timeout);
+        fds = smb2->transport->get_fds(smb2, fd_count, timeout);
+
+        /* Narrow (never widen) the backend's poll timeout by the engine's next
+         * pending deadline so the event loop wakes in time to run
+         * smb2_service_timeout(). With the default smb2_set_timeout(0) and no
+         * backend-published next_timeout, smb2_next_timeout_ms() returns -1 and
+         * *timeout is left exactly as the backend produced it -- so idle TCP
+         * keeps its byte-for-byte prior behaviour (no extra wakeups). */
+        dl = smb2_next_timeout_ms(smb2);
+        if (dl >= 0 && (*timeout < 0 || dl < *timeout)) {
+                *timeout = dl;
+        }
+        return fds;
 }

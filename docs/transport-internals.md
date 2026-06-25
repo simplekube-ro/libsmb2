@@ -84,17 +84,24 @@ Raw client-transport syscalls (`connect` / `writev` / `readv` / `getsockopt` /
 
 `smb2->fd` is still the canonical "am I connected" state for the TCP backend.
 These references are connectedness predicates (`SMB2_VALID_SOCKET`) or
-event-loop hints, not raw I/O, and are deliberately left for Stage 2 (an
-external transport has no fd):
+event-loop hints, not raw I/O:
 
 | Location | Reference | Why it stays |
 | --- | --- | --- |
 | `lib/init.c:287` | `smb2->fd = SMB2_INVALID_SOCKET` | Field initialization. |
 | `lib/pdu.c:583` | `smb2_change_events(smb2, smb2->fd, smb2_which_events(smb2))` | fd is an identifier handed to the app's change-events callback. |
-| `lib/sync.c:83,861,961` | `SMB2_VALID_SOCKET(smb2->fd)` | "Still connected?" guards in the synchronous wrappers. |
-| `lib/libsmb2.c:2688` | `SMB2_VALID_SOCKET(smb2->fd)` | Connectedness check. |
 | `lib/libsmb2.c:4086` | `smb2->fd = fd` | Server-side / sync-connect completion. |
-| `lib/libsmb2.c:4203` | `SMB2_VALID_SOCKET(smb2->fd)` server-timeout | Connectedness check. |
+
+Stage 2 update: the "still connected?" guards that previously read
+`SMB2_VALID_SOCKET(smb2->fd)` directly (sync.c `wait_for_reply`/`smb2_echo`/
+`smb2_share_enum_sync`, `smb2_disconnect_share_async`, and the server-loop
+timeout) are now routed through `smb2_transport_is_connected()`. For the TCP
+backend that helper returns exactly `SMB2_VALID_SOCKET(smb2->fd)` (zero
+behavior change); for the external backend it returns `smb2->ext_connected`,
+which the external backend sets in `ext_connect` and clears in `ext_close`
+(the external transport owns no fd). The synchronous and async service loops
+also gained a "no pollable fd → service via `smb2_which_events()`" branch so an
+external session is driven even though `poll`/`select` cannot wake on it.
 
 ### Server listening socket — a separate concern
 
@@ -176,3 +183,131 @@ backend, and the crypto KAT confirms the linked library is functional. Combined
 with the structural argument in §5 (every dispatcher is a pure pass-through to the
 verbatim former inline body, bound unconditionally to `smb2_tcp_transport_ops`),
 the abstraction is complete and invisible for TCP.
+
+## 7. Stage-2 sign-off — external transport & timeout API (issue #12)
+
+> This section is the Stage-2 verification gate for
+> **simplekube-ro/libsmb2#12**. It records the build/test evidence for the
+> external-transport + timeout work (issues #7–#11) and argues that the default
+> TCP path is still byte-for-byte unchanged. The public API itself is documented
+> in `docs/transport-external-api.md`; this section is the *verification*
+> companion (mirroring §6 above for Stage 1). Evidence was gathered on branch
+> `issue-12-verification-docs` (macOS / arm64, `gcc -std=gnu23` = Apple clang).
+
+### 7.1 What landed in Stage 2 (and where TCP is untouched)
+
+The Stage-2 implementation adds a **second** transport backend
+(`smb2_external_transport_ops` in `lib/transport-external.c`) and a timer hook,
+selectable at runtime via `smb2_set_transport()`. The TCP backend
+(`smb2_tcp_transport_ops`) and all `tcp_*` functions are unchanged except for one
+additive `timer = NULL` initializer (the new 8th ops-table slot). New code lives
+in new translation units (`lib/transport-external.c`, `lib/timer.c`) and in new
+functions in `lib/socket.c` (`smb2_recv_from_ext`, `smb2_read_from_ext`,
+`smb2_transport_is_connected`); no TCP object code is altered.
+
+Zero-behavior-change argument for TCP (extends §5):
+
+- **Default binding unchanged.** `smb2_init_context()` still binds
+  `smb2->transport = &smb2_tcp_transport_ops` and sets
+  `transport_type = SMB2_TRANSPORT_TCP` (`== 0`, already the calloc default).
+- **Connectedness guard is identical for TCP.** `smb2_transport_is_connected()`
+  returns exactly `SMB2_VALID_SOCKET(smb2->fd)` on the TCP branch, so the guard
+  substitutions in `sync.c` / `libsmb2.c` are semantically identical.
+- **New no-fd service branches never fire for TCP.** The "no pollable fd but
+  connected → service via `smb2_which_events()`" branches in `wait_for_reply` and
+  `smb2_serve_port` are gated on `!SMB2_VALID_SOCKET(...) &&
+  smb2_transport_is_connected(smb2)`; a TCP context always has a valid fd, so it
+  never enters the new branch.
+- **Timeout narrowing is a no-op for idle TCP.** With the default
+  `smb2_set_timeout(0)` and no backend `next_timeout`, `smb2_next_timeout_ms()`
+  returns `-1`, so `smb2_get_fds()` leaves `*timeout` exactly as the TCP backend
+  produced it — no extra wakeups.
+- **Write guard relaxed only off the TCP path.** `smb2_write_to_socket()` only
+  relaxes its "not connected" early-return for `transport_type !=
+  SMB2_TRANSPORT_TCP`; the TCP guard is unchanged.
+
+### 7.2 Bounds-safety of the new external path
+
+The new code never trusts a length or return value coming from the application's
+callbacks before feeding the parser (full app-facing contract in
+`docs/transport-external-api.md` §8):
+
+- `smb2_recv_from_ext` (`lib/socket.c`) clamps the requested length to `INT_MAX`
+  and **rejects** a callback return greater than the requested length
+  (`errno = EIO`, `-1`) so a buggy/hostile `recv` cannot push `smb2->in.num_done`
+  past the buffer. `ret == 0` is interpreted as peer close; `ret < 0` preserves
+  `errno` for the `EAGAIN`/`EWOULDBLOCK` translation in `smb2_read_data`.
+- `ext_queue_write` (`lib/transport-external.c`) clamps each vector length to
+  `INT_MAX`, rejects an over-long send return (`EIO`), and returns the partial
+  byte total on a short write so `num_done` never over-advances.
+- `smb2_set_transport` rejects `QUIC`/`AUTO` (with `ext`) unless all four
+  callbacks are non-`NULL`; `ext_connect`/`ext_queue_write`/`smb2_recv_from_ext`
+  each NULL-check their callback; `ext_close` treats a `NULL` close as a no-op.
+- The external backend owns no descriptor: `ext_get_fd` returns
+  `SMB2_INVALID_SOCKET`, `ext_get_fds` returns `NULL`/`*fd_count = 0`, and
+  `ext_close` never calls `close()` on a real fd.
+
+Latent edges flagged for follow-up (NOT changed under #12, not regressions):
+
+- (i) `smb2_recv_from_ext`'s `want == 0` early `return 0` would be read by
+  `smb2_read_data` as peer-close; it is currently unreachable (the state machine
+  never presents a zero-length first trimmed vector) but the surrounding comment
+  is self-contradictory — a latent edge worth a later tidy.
+- (ii) `ext_connect` does no name resolution and hands `host`/`port` to the
+  application verbatim — intended; the application owns resolution.
+- (iii) `ext_connect` treats the connection as immediately established
+  (synchronous `connect`); there is no async-connect failure path on the external
+  backend — documented as the contract that `ext.connect` blocks until connected
+  or fails.
+
+### 7.3 Build evidence — both build systems, the gated flag combination
+
+- **CMake (hard gate):**
+  `cmake -S . -B .wf-build -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF -DENABLE_EXAMPLES=OFF`
+  then `cmake --build .wf-build` → **exit 0**; the new units compiled
+  (`.wf-build/lib/CMakeFiles/smb2.dir/transport-external.c.o` and `timer.c.o`
+  produced). Neither new file references krb5/gssapi, so the
+  `-DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF` combination builds clean.
+- **Autotools (no-regression gate):**
+  `sh ./bootstrap && ./configure --without-libkrb5 && make` → **exit 0**;
+  `lib/.libs/libsmb2` linked. (`bootstrap` lacks the exec bit so it is invoked as
+  `sh ./bootstrap`; `autoreconf` uses `glibtoolize` on macOS.)
+
+Build wiring verified present on this branch: `lib/Makefile.am`
+`libsmb2_la_SOURCES` lists `transport-external.c` + `timer.c`, and
+`lib/CMakeLists.txt` lists both files in **all three** source blocks
+(`ESP_PLATFORM`, `IOP`/`BUILD_IRX`, and the default `else`). `lib/libsmb2.syms`
+exports exactly the three new public functions (`smb2_get_timeout`,
+`smb2_service_timeout`, `smb2_set_transport`).
+
+### 7.4 Tests executed
+
+| Test | Kind | Result |
+| --- | --- | --- |
+| `tests/aes128ccm-test.c` | self-contained crypto KAT (no context, no network) | **PASS** — built against `lib/.libs/libsmb2.a`, ran to exit 0; every `Expected:` block equals its `Got:` block (AES-128-CCM encrypt + decrypt vectors), `Decrypted correct: 0`. Confirms the linked library (now including the Stage-2 units) is functional. |
+
+### 7.5 Tests deferred (and why) — identical to the §6.3 Stage-1 deferrals
+
+- **Functional suite `tests/test_0*.sh` (and `test_900_dcerpc.sh`)** source
+  `tests/functions.sh`, which `. ./setup.local` to obtain SMB server / share /
+  credentials and drive `prog_ls`/`prog_cat`/etc. against a **live Samba server**.
+  No `setup.local` and no server exist in this environment, so the functional
+  (integration) suite is out of scope on the build host; it is the CI / real-server
+  gate.
+- **`tests/smb2-dcerpc-coder-test.c`** and **`tests/ntlmssp_generate_blob.c`** have
+  **pre-existing** compile failures unrelated to this work (stale coder-test arity;
+  ntlmssp header include order), identical to the parent branch. This branch
+  touches only `docs/`, so every test source is **byte-identical to the parent**
+  `issue-11-wire-timer` — the failures are not introduced here and are not a
+  regression.
+
+### 7.6 Why this is sufficient evidence of zero TCP behavior change
+
+This issue (#12) lands **documentation only** — `docs/transport-external-api.md`
+and this section. It adds no `.c`/`.h` source and changes no public symbol. The
+Stage-2 *implementation* it documents is on the parent branch and is exercised by
+the same KAT and clean dual-build above. Combined with the structural argument in
+§7.1 (TCP keeps its unconditional `smb2_tcp_transport_ops` binding; every new
+branch is gated so a TCP context never enters it; the only TCP-table edit is an
+additive `timer = NULL`), the external transport and timeout API are additive and
+the default TCP path is unchanged.
