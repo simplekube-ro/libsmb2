@@ -102,6 +102,7 @@
 #include "libsmb2.h"
 #include "libsmb2-raw.h"
 #include "libsmb2-private.h"
+#include "smb2-transport.h"
 #include "smb2-signing.h"
 #include "portable-endian.h"
 #include "ntlmssp.h"
@@ -174,12 +175,8 @@ smb2_close_context(struct smb2_context *smb2)
                 return;
         }
 
-        if (SMB2_VALID_SOCKET(smb2->fd)) {
-                if (smb2->change_fd) {
-                        smb2->change_fd(smb2, smb2->fd, SMB2_DEL_FD);
-                }
-                close(smb2->fd);
-                smb2->fd = SMB2_INVALID_SOCKET;
+        if (smb2->transport && smb2->transport->close) {
+                smb2->transport->close(smb2);
         }
 
         smb2->message_id = 0;
@@ -2650,11 +2647,9 @@ disconnect_cb_2(struct smb2_context *smb2, int status,
 
         dc_data->cb(smb2, 0, NULL, dc_data->cb_data);
         free(dc_data);
-        if (smb2->change_fd) {
-                smb2->change_fd(smb2, smb2->fd, SMB2_DEL_FD);
+        if (smb2->transport && smb2->transport->close) {
+                smb2->transport->close(smb2);
         }
-        close(smb2->fd);
-        smb2->fd = SMB2_INVALID_SOCKET;
 }
 
 static void

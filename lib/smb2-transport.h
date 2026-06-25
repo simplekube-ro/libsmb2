@@ -41,8 +41,8 @@ struct smb2_transport_ops {
                             smb2_command_cb cb, void *cb_data);
         int      (*service)(struct smb2_context *smb2, t_socket fd,
                             int revents);
-        int      (*queue_write)(struct smb2_context *smb2,
-                                const uint8_t *buf, size_t len);
+        ssize_t  (*queue_write)(struct smb2_context *smb2,
+                                const struct iovec *iov, int niov);
         int      (*close)(struct smb2_context *smb2);
         int      (*which_events)(struct smb2_context *smb2);
         t_socket (*get_fd)(struct smb2_context *smb2);
