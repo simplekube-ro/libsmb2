@@ -70,6 +70,7 @@ libsmb2_la_SOURCES = \
 	smb2-signing.c \
 	smb2-transport.h \
 	socket.c \
+	transport-external.c \
 	spnego-wrapper.c \
 	sync.c \
 	timestamps.c \
