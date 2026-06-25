@@ -2685,7 +2685,7 @@ smb2_disconnect_share_async(struct smb2_context *smb2,
                 return -EINVAL;
         }
 
-        if (!SMB2_VALID_SOCKET(smb2->fd)) {
+        if (!smb2_transport_is_connected(smb2)) {
                 smb2_set_error(smb2, "connection is alreeady disconnected or was never connected");
                 return -EINVAL;
         }
@@ -4179,6 +4179,24 @@ int smb2_serve_port(struct smb2_server *server, const int max_connections, smb2_
                             NULL,
                             (timeout.tv_sec > 0 || timeout.tv_usec >= 0) ? &timeout : NULL
                            );
+
+                /* Service external-transport contexts that expose no pollable
+                 * fd: select() cannot wake on them, so drive their read/write
+                 * state machine directly via the which_events mask on every
+                 * iteration. TCP contexts (always a valid fd) skip this branch
+                 * and keep the fd-gated select() path below byte-for-byte. */
+                for (smb2 = smb2_active_contexts(); smb2; smb2 = smb2->next) {
+                        if (!SMB2_VALID_SOCKET(smb2_get_fd(smb2)) &&
+                            smb2_transport_is_connected(smb2)) {
+                                if (smb2_service(smb2,
+                                                 smb2_which_events(smb2)) < 0) {
+                                        smb2_set_error(smb2, "smb2_service "
+                                                "failed with : %s",
+                                                smb2_get_error(smb2));
+                                        smb2_close_context(smb2);
+                                }
+                        }
+                }
 
                 if (ready > 0) {
                         now = time(NULL);

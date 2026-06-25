@@ -276,9 +276,10 @@ void smb2_set_timeout(struct smb2_context *smb2, int seconds);
  * Transport selector for smb2_set_transport().
  *
  * SMB2_TRANSPORT_TCP is the default (a zero-initialized context already
- * means "TCP, no external transport").  SMB2_TRANSPORT_QUIC and
- * SMB2_TRANSPORT_AUTO select an application-supplied (external) transport
- * via struct smb2_external_transport.
+ * means "TCP, no external transport").  SMB2_TRANSPORT_QUIC selects an
+ * application-supplied (external) transport via struct smb2_external_transport.
+ * SMB2_TRANSPORT_AUTO uses the external transport when one is supplied and
+ * falls back to TCP otherwise.
  */
 #define SMB2_TRANSPORT_TCP   0
 #define SMB2_TRANSPORT_QUIC  1
@@ -315,20 +316,23 @@ struct smb2_external_transport {
  *   SMB2_TRANSPORT_TCP  : use the built-in TCP transport. ext is ignored and
  *                         may be NULL. Any previously selected external
  *                         transport callbacks are dropped.
- *   SMB2_TRANSPORT_QUIC,
- *   SMB2_TRANSPORT_AUTO : use the application-supplied transport. ext must be
+ *   SMB2_TRANSPORT_QUIC : use the application-supplied transport. ext must be
  *                         non-NULL and provide non-NULL connect/send/recv/close
  *                         callbacks.
+ *   SMB2_TRANSPORT_AUTO : use the application-supplied transport when ext is
+ *                         non-NULL (validated as for QUIC); otherwise fall back
+ *                         to the built-in TCP transport.
  *
  * The contents of ext are copied into the context, so the caller need not keep
  * the struct alive after this call. The lifetime of ext->userdata remains the
  * caller's responsibility.
  *
- * Returns 0 on success, or a negative errno value on invalid arguments.
+ * On success the context's transport backend is bound immediately, so
+ * smb2_set_transport() MUST be called before smb2_connect_share[_async]()
+ * (and before any other connect entry point); it must not be changed while a
+ * connection is established.
  *
- * NOTE: in this release smb2_set_transport() validates and stores the
- * selection; the external transport is not yet activated (full wiring lands in
- * a later release). The default TCP path is unaffected.
+ * Returns 0 on success, or a negative errno value on invalid arguments.
  */
 int smb2_set_transport(struct smb2_context *smb2, int type,
                        const struct smb2_external_transport *ext);

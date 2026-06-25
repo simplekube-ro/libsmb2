@@ -732,14 +732,29 @@ int smb2_set_transport(struct smb2_context *smb2, int type,
 
         switch (type) {
         case SMB2_TRANSPORT_TCP:
-                /* Default path: keep the TCP backend, drop any external
+                /* Default path: bind the TCP backend and drop any external
                  * callbacks. ext is ignored (may be NULL).
                  */
+                smb2->transport      = &smb2_tcp_transport_ops;
                 smb2->transport_type = SMB2_TRANSPORT_TCP;
                 memset(&smb2->ext, 0, sizeof(smb2->ext));
+                smb2->ext_connected  = 0;
                 return 0;
-        case SMB2_TRANSPORT_QUIC:
         case SMB2_TRANSPORT_AUTO:
+                /* AUTO == TCP unless an external transport is supplied. When
+                 * ext is NULL we fall back to TCP rather than failing; QUIC (or
+                 * any other) support is provided by the app's external
+                 * transport.
+                 */
+                if (ext == NULL) {
+                        smb2->transport      = &smb2_tcp_transport_ops;
+                        smb2->transport_type = SMB2_TRANSPORT_TCP;
+                        memset(&smb2->ext, 0, sizeof(smb2->ext));
+                        smb2->ext_connected  = 0;
+                        return 0;
+                }
+                /* fall through: validate and bind the external backend. */
+        case SMB2_TRANSPORT_QUIC:
                 if (ext == NULL ||
                     ext->connect == NULL || ext->send == NULL ||
                     ext->recv == NULL || ext->close == NULL) {
@@ -748,8 +763,10 @@ int smb2_set_transport(struct smb2_context *smb2, int type,
                                        "connect/send/recv/close callbacks");
                         return -EINVAL;
                 }
+                smb2->ext            = *ext;   /* copy by value */
                 smb2->transport_type = type;
-                smb2->ext = *ext;   /* copy by value */
+                smb2->transport      = &smb2_external_transport_ops;
+                smb2->ext_connected  = 0;
                 return 0;
         default:
                 smb2_set_error(smb2, "smb2_set_transport: unknown "

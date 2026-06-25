@@ -152,6 +152,13 @@ struct smb2_context {
          */
         int transport_type;
         struct smb2_external_transport ext;
+        /* Transport-agnostic "connected" flag. The external backend never owns
+         * an fd, so SMB2_VALID_SOCKET(smb2->fd) cannot be used as the
+         * "still connected?" predicate for it; ext_connected tracks this state
+         * instead (set in ext_connect, cleared in ext_close). For TCP the fd
+         * remains the source of truth and this flag is unused.
+         */
+        int ext_connected;
 
         t_socket fd;
 
@@ -661,6 +668,11 @@ int smb2_decode_reparse_data_buffer(struct smb2_context *smb2,
 int smb2_read_from_buf(struct smb2_context *smb2);
 int smb2_read_from_ext(struct smb2_context *smb2);
 int smb2_get_credit_charge(struct smb2_context *smb2, struct smb2_pdu *pdu);
+/* Transport-agnostic connectedness predicate: for the TCP backend this is
+ * exactly SMB2_VALID_SOCKET(smb2->fd); for the external backend (which owns no
+ * fd) it returns smb2->ext_connected.
+ */
+int smb2_transport_is_connected(struct smb2_context *smb2);
 void smb2_change_events(struct smb2_context *smb2, t_socket fd, int events);
 void smb2_timeout_pdus(struct smb2_context *smb2);
 
