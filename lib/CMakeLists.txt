@@ -54,6 +54,7 @@ if(ESP_PLATFORM)
     smb2-signing.c
     socket.c
     transport-external.c
+    timer.c
     spnego-wrapper.c
     sync.c
     timestamps.c
@@ -120,6 +121,7 @@ elseif(IOP AND BUILD_IRX)
             smb2-signing.c
             socket.c
             transport-external.c
+            timer.c
             spnego-wrapper.c
             sync.c
             timestamps.c
@@ -180,6 +182,7 @@ else()
             smb2-signing.c
             socket.c
             transport-external.c
+            timer.c
             spnego-wrapper.c
             sync.c
             timestamps.c

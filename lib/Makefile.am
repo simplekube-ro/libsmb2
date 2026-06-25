@@ -71,6 +71,7 @@ libsmb2_la_SOURCES = \
 	smb2-transport.h \
 	socket.c \
 	transport-external.c \
+	timer.c \
 	spnego-wrapper.c \
 	sync.c \
 	timestamps.c \
