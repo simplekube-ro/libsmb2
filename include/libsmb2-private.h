@@ -138,7 +138,11 @@ struct sync_cb_data {
 	void *ptr;
 };
 
+struct smb2_transport_ops;
+
 struct smb2_context {
+
+        const struct smb2_transport_ops *transport;
 
         t_socket fd;
 

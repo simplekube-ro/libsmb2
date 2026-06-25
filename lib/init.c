@@ -73,6 +73,7 @@
 #include "smb2.h"
 #include "libsmb2.h"
 #include "libsmb2-private.h"
+#include "smb2-transport.h"
 #include "slist.h"
 
 #define MAX_URL_SIZE 1024
@@ -282,6 +283,7 @@ struct smb2_context *smb2_init_context(void)
 
         ret = getlogin_r(buf, sizeof(buf));
         smb2_set_user(smb2, ret == 0 ? buf : "Guest");
+        smb2->transport = &smb2_tcp_transport_ops;
         smb2->fd = SMB2_INVALID_SOCKET;
         smb2->connecting_fds = NULL;
         smb2->connecting_fds_count = 0;
