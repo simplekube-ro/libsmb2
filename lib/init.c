@@ -284,6 +284,7 @@ struct smb2_context *smb2_init_context(void)
         ret = getlogin_r(buf, sizeof(buf));
         smb2_set_user(smb2, ret == 0 ? buf : "Guest");
         smb2->transport = &smb2_tcp_transport_ops;
+        smb2->transport_type = SMB2_TRANSPORT_TCP;
         smb2->fd = SMB2_INVALID_SOCKET;
         smb2->connecting_fds = NULL;
         smb2->connecting_fds_count = 0;
@@ -720,6 +721,41 @@ void smb2_set_authentication(struct smb2_context *smb2, int val)
 void smb2_set_timeout(struct smb2_context *smb2, int seconds)
 {
         smb2->timeout = seconds;
+}
+
+int smb2_set_transport(struct smb2_context *smb2, int type,
+                       const struct smb2_external_transport *ext)
+{
+        if (smb2 == NULL) {
+                return -EINVAL;
+        }
+
+        switch (type) {
+        case SMB2_TRANSPORT_TCP:
+                /* Default path: keep the TCP backend, drop any external
+                 * callbacks. ext is ignored (may be NULL).
+                 */
+                smb2->transport_type = SMB2_TRANSPORT_TCP;
+                memset(&smb2->ext, 0, sizeof(smb2->ext));
+                return 0;
+        case SMB2_TRANSPORT_QUIC:
+        case SMB2_TRANSPORT_AUTO:
+                if (ext == NULL ||
+                    ext->connect == NULL || ext->send == NULL ||
+                    ext->recv == NULL || ext->close == NULL) {
+                        smb2_set_error(smb2, "smb2_set_transport: external "
+                                       "transport requires non-NULL "
+                                       "connect/send/recv/close callbacks");
+                        return -EINVAL;
+                }
+                smb2->transport_type = type;
+                smb2->ext = *ext;   /* copy by value */
+                return 0;
+        default:
+                smb2_set_error(smb2, "smb2_set_transport: unknown "
+                               "transport type %d", type);
+                return -EINVAL;
+        }
 }
 
 void smb2_set_version(struct smb2_context *smb2,

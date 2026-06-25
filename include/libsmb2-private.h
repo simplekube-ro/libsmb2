@@ -144,6 +144,15 @@ struct smb2_context {
 
         const struct smb2_transport_ops *transport;
 
+        /* Stage-2 external (app-supplied) transport selection.
+         * transport_type is one of SMB2_TRANSPORT_* (default
+         * SMB2_TRANSPORT_TCP == 0, set by calloc()).  ext holds a copy of the
+         * application's callbacks when an external transport is selected;
+         * ext.connect == NULL means "no external transport".
+         */
+        int transport_type;
+        struct smb2_external_transport ext;
+
         t_socket fd;
 
         struct smb2_server *owning_server;

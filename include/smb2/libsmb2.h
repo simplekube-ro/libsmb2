@@ -273,6 +273,67 @@ int smb2_service_fd(struct smb2_context *smb2, t_socket fd, int revents);
 void smb2_set_timeout(struct smb2_context *smb2, int seconds);
 
 /*
+ * Transport selector for smb2_set_transport().
+ *
+ * SMB2_TRANSPORT_TCP is the default (a zero-initialized context already
+ * means "TCP, no external transport").  SMB2_TRANSPORT_QUIC and
+ * SMB2_TRANSPORT_AUTO select an application-supplied (external) transport
+ * via struct smb2_external_transport.
+ */
+#define SMB2_TRANSPORT_TCP   0
+#define SMB2_TRANSPORT_QUIC  1
+#define SMB2_TRANSPORT_AUTO  2
+
+/*
+ * Application-supplied transport callbacks.  This is the public, library-type
+ * free interface an application implements to carry SMB2 over a transport that
+ * libsmb2 does not implement itself (for example SMB-over-QUIC).  All callbacks
+ * receive the opaque userdata pointer supplied here and exchange raw bytes;
+ * no QUIC/TLS library type is exposed.
+ *
+ *   connect : establish the transport to host:port. Returns 0 on success,
+ *             negative on failure.
+ *   send    : send len bytes from buf. Returns the number of bytes sent,
+ *             or negative on error (with would-block reported as the platform
+ *             would for a non-blocking socket).
+ *   recv    : receive up to max_len bytes into buf. Returns the number of
+ *             bytes received, 0 on peer close, or negative on error.
+ *   close   : tear the transport down. Returns 0 on success.
+ */
+struct smb2_external_transport {
+        void *userdata;
+        int (*connect)(void *userdata, const char *host, int port);
+        int (*send)(void *userdata, const uint8_t *buf, size_t len);
+        int (*recv)(void *userdata, uint8_t *buf, size_t max_len);
+        int (*close)(void *userdata);
+};
+
+/*
+ * Select the transport libsmb2 uses for this context.
+ *
+ * type must be one of the SMB2_TRANSPORT_* constants:
+ *   SMB2_TRANSPORT_TCP  : use the built-in TCP transport. ext is ignored and
+ *                         may be NULL. Any previously selected external
+ *                         transport callbacks are dropped.
+ *   SMB2_TRANSPORT_QUIC,
+ *   SMB2_TRANSPORT_AUTO : use the application-supplied transport. ext must be
+ *                         non-NULL and provide non-NULL connect/send/recv/close
+ *                         callbacks.
+ *
+ * The contents of ext are copied into the context, so the caller need not keep
+ * the struct alive after this call. The lifetime of ext->userdata remains the
+ * caller's responsibility.
+ *
+ * Returns 0 on success, or a negative errno value on invalid arguments.
+ *
+ * NOTE: in this release smb2_set_transport() validates and stores the
+ * selection; the external transport is not yet activated (full wiring lands in
+ * a later release). The default TCP path is unaffected.
+ */
+int smb2_set_transport(struct smb2_context *smb2, int type,
+                       const struct smb2_external_transport *ext);
+
+/*
  * Set passthrough-enable.  Passthrough allows command packers
  * and unpackers to keep the extra data on complex commands
  * in its on-the-wire format without any interpretation. this
