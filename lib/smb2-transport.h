@@ -103,6 +103,9 @@ struct smb2_transport_ops {
 /* Default TCP transport backend. */
 extern const struct smb2_transport_ops smb2_tcp_transport_ops;
 
+/* External (application-supplied) transport backend (Stage 2). */
+extern const struct smb2_transport_ops smb2_external_transport_ops;
+
 #ifdef __cplusplus
 }
 #endif
