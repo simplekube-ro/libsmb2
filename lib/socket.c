@@ -1288,9 +1288,9 @@ static void interleave_addrinfo(struct addrinfo *base)
         }
 }
 
-int
-smb2_connect_async(struct smb2_context *smb2, const char *server,
-                   smb2_command_cb cb, void *private_data)
+static int
+tcp_connect(struct smb2_context *smb2, const char *server,
+            smb2_command_cb cb, void *private_data)
 {
         char *addr, *host, *port;
         int err;
@@ -1505,18 +1505,14 @@ void smb2_change_events(struct smb2_context *smb2, t_socket fd, int events)
 /*
  * TCP transport backend.
  *
- * These are thin wrappers that delegate to the existing TCP functions above.
- * In Stage 1 the ops table is registered as the default transport but is not
- * yet on the hot path: every existing call-site still calls the concrete
- * functions directly, so behavior is unchanged.
+ * Most of these are thin wrappers that delegate to the existing TCP functions
+ * above. The connect operation is now live: the public smb2_connect_async()
+ * entry point dispatches through smb2->transport->connect, which resolves to
+ * tcp_connect() (the real Happy-Eyeballs implementation above). The remaining
+ * wrappers are registered as the default transport but are not yet on the hot
+ * path; their existing call-sites still call the concrete functions directly,
+ * so behavior is unchanged.
  */
-static int
-tcp_connect(struct smb2_context *smb2, const char *server,
-            smb2_command_cb cb, void *cb_data)
-{
-        return smb2_connect_async(smb2, server, cb, cb_data);
-}
-
 static int
 tcp_service(struct smb2_context *smb2, int revents)
 {
@@ -1571,3 +1567,20 @@ const struct smb2_transport_ops smb2_tcp_transport_ops = {
         tcp_which_events,
         tcp_get_fd,
 };
+
+/*
+ * Public connect entry point. This is a thin dispatcher that routes connection
+ * establishment through the registered transport backend's connect operation
+ * (for the default TCP backend this resolves to tcp_connect above).
+ */
+int
+smb2_connect_async(struct smb2_context *smb2, const char *server,
+                   smb2_command_cb cb, void *private_data)
+{
+        if (smb2->transport == NULL || smb2->transport->connect == NULL) {
+                smb2_set_error(smb2, "No transport connect operation "
+                               "registered.");
+                return -EINVAL;
+        }
+        return smb2->transport->connect(smb2, server, cb, private_data);
+}
