@@ -1355,14 +1355,19 @@ void smb2_change_events(struct smb2_context *smb2, t_socket fd, int events)
 /*
  * TCP transport backend.
  *
- * The connect, service and poll-surface operations are live: their public
- * entry points (smb2_connect_async / smb2_service_fd / smb2_which_events /
- * smb2_get_fd / smb2_get_fds) dispatch through smb2->transport, which resolves
- * to the tcp_* implementations here. tcp_service is the canonical workhorse
- * that carries the multi-fd Happy-Eyeballs connect semantics and drives the
- * receive state machine. The remaining wrappers are registered as the default
- * transport but are not yet on the hot path; their existing call-sites still
- * call the concrete functions directly, so behavior is unchanged.
+ * All seven transport operations are live: every public/engine entry point
+ * (smb2_connect_async / smb2_service_fd / smb2_write_to_socket / the close
+ * call-sites in init.c and libsmb2.c / smb2_which_events / smb2_get_fd /
+ * smb2_get_fds) dispatches through smb2->transport, which on every context
+ * resolves to the tcp_* implementations in this file. tcp_service remains the
+ * canonical workhorse that carries the multi-fd Happy-Eyeballs connect
+ * semantics and drives the receive state machine; it still calls the concrete
+ * internal helpers (smb2_read_from_socket / smb2_write_to_socket /
+ * smb2_change_events / smb2_which_events) directly, and only the raw syscalls
+ * (connect / writev / readv / getsockopt / close) live here in the backend.
+ * Because the default binding is unconditional and Stage 1 exposes no API to
+ * replace it, every dispatch is a pure pass-through to the function that was
+ * the original inline code, so TCP behavior is byte-for-byte unchanged.
  */
 static int
 tcp_service(struct smb2_context *smb2, t_socket fd, int revents)
