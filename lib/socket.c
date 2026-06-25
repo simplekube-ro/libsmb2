@@ -185,44 +185,6 @@ smb2_get_credit_charge(struct smb2_context *smb2, struct smb2_pdu *pdu)
 }
 
 int
-smb2_which_events(struct smb2_context *smb2)
-{
-        int events = SMB2_VALID_SOCKET(smb2->fd) ? POLLIN : POLLOUT;
-
-        if (smb2->outqueue != NULL &&
-            smb2_get_credit_charge(smb2, smb2->outqueue) <= smb2->credits) {
-                events |= POLLOUT;
-        }
-
-        return events;
-}
-
-t_socket smb2_get_fd(struct smb2_context *smb2)
-{
-        if (SMB2_VALID_SOCKET(smb2->fd)) {
-                return smb2->fd;
-        } else if (smb2->connecting_fds_count > 0) {
-                return smb2->connecting_fds[0];
-        } else {
-                return -1;
-        }
-}
-
-const t_socket *
-smb2_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout)
-{
-        if (SMB2_VALID_SOCKET(smb2->fd)) {
-                *fd_count = 1;
-                *timeout = -1;
-                return &smb2->fd;
-        } else {
-                *fd_count = smb2->connecting_fds_count;
-                *timeout = smb2->next_addrinfo != NULL ? HAPPY_EYEBALLS_TIMEOUT : -1;
-                return smb2->connecting_fds;
-        }
-}
-
-int
 smb2_write_to_socket(struct smb2_context *smb2)
 {
         struct smb2_pdu *pdu;
@@ -1550,13 +1512,40 @@ tcp_close(struct smb2_context *smb2)
 static int
 tcp_which_events(struct smb2_context *smb2)
 {
-        return smb2_which_events(smb2);
+        int events = SMB2_VALID_SOCKET(smb2->fd) ? POLLIN : POLLOUT;
+
+        if (smb2->outqueue != NULL &&
+            smb2_get_credit_charge(smb2, smb2->outqueue) <= smb2->credits) {
+                events |= POLLOUT;
+        }
+
+        return events;
 }
 
 static t_socket
 tcp_get_fd(struct smb2_context *smb2)
 {
-        return smb2_get_fd(smb2);
+        if (SMB2_VALID_SOCKET(smb2->fd)) {
+                return smb2->fd;
+        } else if (smb2->connecting_fds_count > 0) {
+                return smb2->connecting_fds[0];
+        } else {
+                return -1;
+        }
+}
+
+static const t_socket *
+tcp_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout)
+{
+        if (SMB2_VALID_SOCKET(smb2->fd)) {
+                *fd_count = 1;
+                *timeout = -1;
+                return &smb2->fd;
+        } else {
+                *fd_count = smb2->connecting_fds_count;
+                *timeout = smb2->next_addrinfo != NULL ? HAPPY_EYEBALLS_TIMEOUT : -1;
+                return smb2->connecting_fds;
+        }
 }
 
 const struct smb2_transport_ops smb2_tcp_transport_ops = {
@@ -1566,6 +1555,7 @@ const struct smb2_transport_ops smb2_tcp_transport_ops = {
         tcp_close,
         tcp_which_events,
         tcp_get_fd,
+        tcp_get_fds,
 };
 
 /*
@@ -1583,4 +1573,41 @@ smb2_connect_async(struct smb2_context *smb2, const char *server,
                 return -EINVAL;
         }
         return smb2->transport->connect(smb2, server, cb, private_data);
+}
+
+/*
+ * Public poll-surface entry points. These are thin dispatchers that route the
+ * event-loop integration through the registered transport backend's poll
+ * operations (for the default TCP backend these resolve to tcp_which_events /
+ * tcp_get_fd / tcp_get_fds above).
+ */
+int
+smb2_which_events(struct smb2_context *smb2)
+{
+        if (smb2->transport == NULL || smb2->transport->which_events == NULL) {
+                smb2_set_error(smb2, "No transport which_events operation "
+                               "registered.");
+                return 0;
+        }
+        return smb2->transport->which_events(smb2);
+}
+
+t_socket
+smb2_get_fd(struct smb2_context *smb2)
+{
+        if (smb2->transport == NULL || smb2->transport->get_fd == NULL) {
+                return -1;
+        }
+        return smb2->transport->get_fd(smb2);
+}
+
+const t_socket *
+smb2_get_fds(struct smb2_context *smb2, size_t *fd_count, int *timeout)
+{
+        if (smb2->transport == NULL || smb2->transport->get_fds == NULL) {
+                *fd_count = 0;
+                *timeout = -1;
+                return NULL;
+        }
+        return smb2->transport->get_fds(smb2, fd_count, timeout);
 }

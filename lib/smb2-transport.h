@@ -45,6 +45,8 @@ struct smb2_transport_ops {
         int      (*close)(struct smb2_context *smb2);
         int      (*which_events)(struct smb2_context *smb2);
         t_socket (*get_fd)(struct smb2_context *smb2);
+        const t_socket *(*get_fds)(struct smb2_context *smb2,
+                                   size_t *fd_count, int *timeout);
 };
 
 /* Default TCP transport backend. */
