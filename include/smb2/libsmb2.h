@@ -119,6 +119,8 @@ struct smb2dirent {
 #elif defined(_XBOX)
 #include <xtl.h>
 #include <winsockx.h>
+#else
+#include <sys/time.h>
 #endif
 
 #if defined(_WINDOWS) || defined(_XBOX)
@@ -336,6 +338,35 @@ struct smb2_external_transport {
  */
 int smb2_set_transport(struct smb2_context *smb2, int type,
                        const struct smb2_external_transport *ext);
+
+/*
+ * Return the next deadline at which the engine needs servicing.
+ *
+ * On return *tv holds the (non-negative) time remaining until the next
+ * timer-driven action is due; {0,0} means "due now". This is intended to bound
+ * the timeout an event loop passes to poll()/select() so timer-driven work
+ * (for TCP: per-request timeouts; for a QUIC/external transport: handshake,
+ * idle, loss-recovery) is serviced on time. *tv is only valid when the
+ * function returns 1; it is left unchanged otherwise.
+ *
+ * Returns:
+ *   1 : a deadline is pending; *tv has been filled in.
+ *   0 : no timer is pending; *tv is left unchanged.
+ *  <0 : -EINVAL if smb2 or tv is NULL.
+ */
+int smb2_get_timeout(struct smb2_context *smb2, struct timeval *tv);
+
+/*
+ * Run timer-driven processing. Call this whenever a deadline returned by
+ * smb2_get_timeout() has expired (calling it early is a safe no-op). For TCP
+ * this aborts any commands that have exceeded smb2_set_timeout() seconds with
+ * SMB2_STATUS_IO_TIMEOUT.
+ *
+ * Returns:
+ *   0 : Success (including the nothing-was-due no-op case).
+ *  <0 : -EINVAL if smb2 is NULL.
+ */
+int smb2_service_timeout(struct smb2_context *smb2);
 
 /*
  * Set passthrough-enable.  Passthrough allows command packers

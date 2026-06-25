@@ -171,6 +171,13 @@ struct smb2_context {
 
         int timeout;
 
+        /* Stage-2 timer state. The effective deadline for TCP is derived on
+         * demand from the per-pdu timeouts; next_timeout caches an absolute
+         * deadline (0 == none) that a transport backend can publish so #11 can
+         * surface it via smb2_get_fds() and drive sub-second timer work for an
+         * external/QUIC transport. Unused (left 0) by the TCP backend. */
+        time_t next_timeout;
+
         enum smb2_sec sec;
 
         uint16_t security_mode;
