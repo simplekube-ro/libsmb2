@@ -193,6 +193,11 @@ smb2_write_to_socket(struct smb2_context *smb2)
                 smb2_set_error(smb2, "trying to write but not connected");
                 return -1;
         }
+        if (smb2->transport == NULL || smb2->transport->queue_write == NULL) {
+                smb2_set_error(smb2, "No transport queue_write operation "
+                               "registered.");
+                return -1;
+        }
         while ((pdu = smb2->outqueue) != NULL) {
                 struct iovec iov[SMB2_MAX_VECTORS] _U_;
                 struct iovec *tmpiov;
@@ -252,7 +257,7 @@ smb2_write_to_socket(struct smb2_context *smb2)
 #else
                 tmpiov->iov_len -= (size_t)num_done;
 #endif
-                count = writev(smb2->fd, tmpiov, niov);
+                count = smb2->transport->queue_write(smb2, tmpiov, niov);
 
                 if (count == -1) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -1495,30 +1500,35 @@ tcp_service(struct smb2_context *smb2, t_socket fd, int revents)
 }
 
 /*
- * queue_write has no thin single-function counterpart in the current TCP
- * path (sending is PDU/outqueue based via smb2_write_to_socket). It is a
- * forward-looking member that is wired in a later Stage-1 issue; for now it
- * is a placeholder that is never invoked.
+ * Send the serialized PDU byte vectors over the TCP socket. The SMB engine
+ * (smb2_write_to_socket) builds the scatter-gather vector and reaches this
+ * syscall only through transport->queue_write. The body must stay a bare
+ * writev + return so that errno (inspected by the caller for EAGAIN/
+ * EWOULDBLOCK) is not clobbered.
  */
-static int
-tcp_queue_write(struct smb2_context *smb2, const uint8_t *buf, size_t len)
+static ssize_t
+tcp_queue_write(struct smb2_context *smb2, const struct iovec *iov, int niov)
 {
-        (void)buf;
-        (void)len;
-        smb2_set_error(smb2, "tcp_queue_write is not implemented yet");
-        return -1;
+        return writev(smb2->fd, (struct iovec *) iov, niov);
 }
 
 /*
- * close has no thin single-function counterpart in the current TCP path
- * (teardown is inlined in smb2_destroy_context). It is a forward-looking
- * member that is wired in a later Stage-1 issue; for now it is a placeholder
- * that is never invoked.
+ * Tear down the TCP connection. This handles both the established-socket case
+ * and the mid-Happy-Eyeballs case where no fd has won the connect race yet.
+ * The close() syscall lives only here in the TCP backend.
  */
 static int
 tcp_close(struct smb2_context *smb2)
 {
-        (void)smb2;
+        if (SMB2_VALID_SOCKET(smb2->fd)) {
+                if (smb2->change_fd) {
+                        smb2->change_fd(smb2, smb2->fd, SMB2_DEL_FD);
+                }
+                close(smb2->fd);
+                smb2->fd = SMB2_INVALID_SOCKET;
+        } else {
+                smb2_close_connecting_fds(smb2);
+        }
         return 0;
 }
 

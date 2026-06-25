@@ -315,15 +315,8 @@ void smb2_destroy_context(struct smb2_context *smb2)
                 return;
         }
 
-        if (SMB2_VALID_SOCKET(smb2->fd)) {
-                if (smb2->change_fd) {
-                        smb2->change_fd(smb2, smb2->fd, SMB2_DEL_FD);
-                }
-                close(smb2->fd);
-                smb2->fd = SMB2_INVALID_SOCKET;
-        }
-        else {
-                smb2_close_connecting_fds(smb2);
+        if (smb2->transport && smb2->transport->close) {
+                smb2->transport->close(smb2);
         }
 
         while (smb2->outqueue) {
