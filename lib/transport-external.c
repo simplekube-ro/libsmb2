@@ -141,9 +141,14 @@ ext_connect(struct smb2_context *smb2, const char *server,
                 return ret;
         }
 
-        /* The transport is up. Fire the connect callback synchronously to
-         * kick off the NEGOTIATE exchange, mirroring tcp_service's behaviour
-         * once a socket finishes connecting. */
+        /* The transport is up. Mark the context connected (the external
+         * backend owns no fd, so this flag is the connectedness predicate used
+         * by smb2_transport_is_connected). */
+        smb2->ext_connected = 1;
+
+        /* Fire the connect callback synchronously to kick off the NEGOTIATE
+         * exchange, mirroring tcp_service's behaviour once a socket finishes
+         * connecting. */
         smb2->connect_cb   = cb;
         smb2->connect_data = cb_data;
         if (smb2->connect_cb) {
@@ -264,6 +269,7 @@ ext_close(struct smb2_context *smb2)
         if (smb2->ext.close) {
                 smb2->ext.close(smb2->ext.userdata);
         }
+        smb2->ext_connected = 0;
         smb2->fd = SMB2_INVALID_SOCKET;
         return 0;
 }

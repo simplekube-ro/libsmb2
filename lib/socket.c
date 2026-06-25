@@ -186,6 +186,15 @@ smb2_get_credit_charge(struct smb2_context *smb2, struct smb2_pdu *pdu)
 }
 
 int
+smb2_transport_is_connected(struct smb2_context *smb2)
+{
+        if (smb2->transport_type == SMB2_TRANSPORT_TCP) {
+                return SMB2_VALID_SOCKET(smb2->fd);
+        }
+        return smb2->ext_connected;
+}
+
+int
 smb2_write_to_socket(struct smb2_context *smb2)
 {
         struct smb2_pdu *pdu;

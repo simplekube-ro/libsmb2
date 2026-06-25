@@ -84,17 +84,24 @@ Raw client-transport syscalls (`connect` / `writev` / `readv` / `getsockopt` /
 
 `smb2->fd` is still the canonical "am I connected" state for the TCP backend.
 These references are connectedness predicates (`SMB2_VALID_SOCKET`) or
-event-loop hints, not raw I/O, and are deliberately left for Stage 2 (an
-external transport has no fd):
+event-loop hints, not raw I/O:
 
 | Location | Reference | Why it stays |
 | --- | --- | --- |
 | `lib/init.c:287` | `smb2->fd = SMB2_INVALID_SOCKET` | Field initialization. |
 | `lib/pdu.c:583` | `smb2_change_events(smb2, smb2->fd, smb2_which_events(smb2))` | fd is an identifier handed to the app's change-events callback. |
-| `lib/sync.c:83,861,961` | `SMB2_VALID_SOCKET(smb2->fd)` | "Still connected?" guards in the synchronous wrappers. |
-| `lib/libsmb2.c:2688` | `SMB2_VALID_SOCKET(smb2->fd)` | Connectedness check. |
 | `lib/libsmb2.c:4086` | `smb2->fd = fd` | Server-side / sync-connect completion. |
-| `lib/libsmb2.c:4203` | `SMB2_VALID_SOCKET(smb2->fd)` server-timeout | Connectedness check. |
+
+Stage 2 update: the "still connected?" guards that previously read
+`SMB2_VALID_SOCKET(smb2->fd)` directly (sync.c `wait_for_reply`/`smb2_echo`/
+`smb2_share_enum_sync`, `smb2_disconnect_share_async`, and the server-loop
+timeout) are now routed through `smb2_transport_is_connected()`. For the TCP
+backend that helper returns exactly `SMB2_VALID_SOCKET(smb2->fd)` (zero
+behavior change); for the external backend it returns `smb2->ext_connected`,
+which the external backend sets in `ext_connect` and clears in `ext_close`
+(the external transport owns no fd). The synchronous and async service loops
+also gained a "no pollable fd → service via `smb2_which_events()`" branch so an
+external session is driven even though `poll`/`select` cannot wake on it.
 
 ### Server listening socket — a separate concern
 
