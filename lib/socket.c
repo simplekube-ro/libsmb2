@@ -108,6 +108,7 @@
 #include "libsmb2.h"
 #include "smb3-seal.h"
 #include "libsmb2-private.h"
+#include "smb2-transport.h"
 #include "portable-endian.h"
 #include <errno.h>
 
@@ -1500,3 +1501,73 @@ void smb2_change_events(struct smb2_context *smb2, t_socket fd, int events)
                 smb2->events = events;
         }
 }
+
+/*
+ * TCP transport backend.
+ *
+ * These are thin wrappers that delegate to the existing TCP functions above.
+ * In Stage 1 the ops table is registered as the default transport but is not
+ * yet on the hot path: every existing call-site still calls the concrete
+ * functions directly, so behavior is unchanged.
+ */
+static int
+tcp_connect(struct smb2_context *smb2, const char *server,
+            smb2_command_cb cb, void *cb_data)
+{
+        return smb2_connect_async(smb2, server, cb, cb_data);
+}
+
+static int
+tcp_service(struct smb2_context *smb2, int revents)
+{
+        return smb2_service(smb2, revents);
+}
+
+/*
+ * queue_write has no thin single-function counterpart in the current TCP
+ * path (sending is PDU/outqueue based via smb2_write_to_socket). It is a
+ * forward-looking member that is wired in a later Stage-1 issue; for now it
+ * is a placeholder that is never invoked.
+ */
+static int
+tcp_queue_write(struct smb2_context *smb2, const uint8_t *buf, size_t len)
+{
+        (void)buf;
+        (void)len;
+        smb2_set_error(smb2, "tcp_queue_write is not implemented yet");
+        return -1;
+}
+
+/*
+ * close has no thin single-function counterpart in the current TCP path
+ * (teardown is inlined in smb2_destroy_context). It is a forward-looking
+ * member that is wired in a later Stage-1 issue; for now it is a placeholder
+ * that is never invoked.
+ */
+static int
+tcp_close(struct smb2_context *smb2)
+{
+        (void)smb2;
+        return 0;
+}
+
+static int
+tcp_which_events(struct smb2_context *smb2)
+{
+        return smb2_which_events(smb2);
+}
+
+static t_socket
+tcp_get_fd(struct smb2_context *smb2)
+{
+        return smb2_get_fd(smb2);
+}
+
+const struct smb2_transport_ops smb2_tcp_transport_ops = {
+        tcp_connect,
+        tcp_service,
+        tcp_queue_write,
+        tcp_close,
+        tcp_which_events,
+        tcp_get_fd,
+};

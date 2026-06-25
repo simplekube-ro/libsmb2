@@ -68,6 +68,7 @@ libsmb2_la_SOURCES = \
 	smb3-seal.c \
 	smb2-signing.h \
 	smb2-signing.c \
+	smb2-transport.h \
 	socket.c \
 	spnego-wrapper.c \
 	sync.c \
