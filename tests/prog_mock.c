@@ -43,14 +43,19 @@
  * authenticated SESSION_SETUP / TREE_CONNECT drive-through (NTLM/SPNEGO) belongs
  * to the dependent live/full-exchange work (#15); we deliberately stop the
  * bounded pump loop once the engine has emitted SESSION_SETUP, so this test
- * never blocks and never asserts success it did not observe.
+ * never blocks and never claims success it did not observe. Verification is
+ * done with real control flow (if/goto + rc), not assert(), so it cannot be
+ * compiled out under -DNDEBUG.
  */
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 
-#include <assert.h>
+/* Verification MUST NOT be compiled out: the checks in main() are real program
+ * control flow (if/goto + rc), NOT assert()s, so a Release/-DNDEBUG build still
+ * fails on a broken exchange. There are deliberately no assert()s in this file. */
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -164,26 +169,63 @@ int main(void)
                 }
         }
 
-        /* --- Assertion 1: the engine owns NO pollable descriptor. --- */
-        assert(smb2_get_fd(smb2) == EXT_INVALID_SOCKET);
+        /* --- Verification. These are real control flow (NOT assert()): a
+         * Release / -DNDEBUG build still fails a broken exchange here. rc stays
+         * 1 (set at top of main) and we print "FAIL" unless every check below
+         * passes; the OK banner and rc=0 are only reached after all of them. */
+
+        /* Check 1: the engine owns NO pollable descriptor. */
+        if (smb2_get_fd(smb2) != EXT_INVALID_SOCKET) {
+                fprintf(stderr, "FAIL: smb2_get_fd() returned a valid socket\n");
+                goto out;
+        }
         fds = smb2_get_fds(smb2, &fd_count, &fds_timeout);
-        assert(fds == NULL);
-        assert(fd_count == 0);
+        if (fds != NULL || fd_count != 0) {
+                fprintf(stderr, "FAIL: smb2_get_fds() exposed %zu descriptor(s)\n",
+                        fd_count);
+                goto out;
+        }
 
-        /* --- Assertion 2: zero sockets were ever created. --- */
-        assert(m.socket_calls == 0);
-        assert(m.connected == 1);
+        /* Check 2: zero sockets were ever created, but connect ran. */
+        if (m.socket_calls != 0) {
+                fprintf(stderr, "FAIL: mock created %lu socket(s)\n",
+                        m.socket_calls);
+                goto out;
+        }
+        if (m.connected != 1) {
+                fprintf(stderr, "FAIL: mock connect callback was not invoked\n");
+                goto out;
+        }
 
-        /* --- Assertion 3: real bidirectional byte movement occurred. --- */
-        assert(m.bytes_sent > 0);
-        assert(m.bytes_recvd > 0);
+        /* Check 3: real bidirectional byte movement occurred. */
+        if (m.bytes_sent == 0) {
+                fprintf(stderr, "FAIL: no app->server bytes were sent\n");
+                goto out;
+        }
+        if (m.bytes_recvd == 0) {
+                fprintf(stderr, "FAIL: no server->app bytes were received\n");
+                goto out;
+        }
 
-        /* --- Assertion 4: the engine parsed our crafted NEGOTIATE reply. ---
-         * It only emits a SESSION_SETUP request after successfully processing
-         * the negotiate reply, so observing that request is the parse proof. */
-        assert(m.saw_negotiate == 1);
-        assert(m.sent_negotiate_rep == 1);
-        assert(m.saw_session_setup == 1);
+        /* Check 4: the engine parsed our crafted NEGOTIATE reply. It only
+         * emits a SESSION_SETUP request after successfully processing the
+         * negotiate reply, so observing that request is the parse proof. */
+        if (m.saw_negotiate != 1) {
+                fprintf(stderr, "FAIL: engine never emitted a NEGOTIATE request\n");
+                goto out;
+        }
+        if (m.sent_negotiate_rep != 1) {
+                fprintf(stderr, "FAIL: mock never staged the NEGOTIATE reply\n");
+                goto out;
+        }
+        if (m.saw_session_setup != 1) {
+                fprintf(stderr, "FAIL: engine did not parse the NEGOTIATE reply "
+                        "(no SESSION_SETUP request emitted)\n");
+                goto out;
+        }
+
+        /* All checks passed: only now is success real. */
+        rc = 0;
 
         printf("in-memory mock transport: OK\n");
         printf("  sockets created            : %lu\n", m.socket_calls);
@@ -193,8 +235,6 @@ int main(void)
         printf("  smb2_get_fd()              : invalid (no socket)\n");
         printf("  reached                    : NEGOTIATE replied, "
                "engine emitted SESSION_SETUP\n");
-
-        rc = 0;
 
  out:
         smb2_destroy_context(smb2);
