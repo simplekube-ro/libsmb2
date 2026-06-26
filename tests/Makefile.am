@@ -7,6 +7,22 @@ LDADD = ../lib/libsmb2.la
 noinst_PROGRAMS = prog_ls prog_mkdir prog_rmdir prog_cat \
 	prog_cat_cancel smb2-dcerpc-coder-test
 noinst_PROGRAMS += metastat-0202-censored
+noinst_PROGRAMS += prog_ls_external
+noinst_PROGRAMS += prog_mock
+noinst_PROGRAMS += prog_external_exchange
+
+prog_ls_external_SOURCES = prog_ls_external.c \
+	external_tcp_transport.c external_tcp_transport.h
+
+prog_mock_SOURCES = prog_mock.c \
+	mock_transport.c mock_transport.h recorded_exchange.h
+
+# The full-exchange program links BOTH fixtures: it selects the in-memory mock
+# or the test-owned TCP transport at runtime (argv), so the one binary runs the
+# headline test two ways (network-free CI + live server).
+prog_external_exchange_SOURCES = prog_external_exchange.c \
+	mock_transport.c mock_transport.h recorded_exchange.h \
+	external_tcp_transport.c external_tcp_transport.h
 
 EXTRA_PROGRAMS = ld_sockerr
 CLEANFILES = ld_sockerr.o ld_sockerr.so

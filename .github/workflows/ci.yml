@@ -1,0 +1,93 @@
+# libsmb2 CI for the simplekube-ro / RandomPlayer transport-abstraction fork.
+#
+# Scope: this fork is consumed by RandomPlayer on Apple OSes; CI runs on Linux
+# (GitHub-hosted ubuntu runners) as the build/test proxy. We intentionally do
+# NOT carry upstream's console/handheld build matrix (PS2/Vita/PS3/PS4/Switch/
+# 3DS/Wii/WiiU/GameCube/DS/Amiga/...) — those are irrelevant to our use case.
+#
+# It builds libsmb2 under BOTH build systems (autotools + CMake, gcc + clang)
+# and runs ONLY the network-free transport-decoupling tests:
+#
+#   * the negotiate-only in-memory mock (tests/prog_mock /
+#     test_0600_mock_inmemory.sh under autotools; the `mock_inmemory` CTest
+#     under cmake), and
+#   * the headline full-exchange in-memory test (#15): prog_external_exchange
+#     --inmemory / test_external_transport.sh under autotools; the
+#     `external_exchange_inmemory` CTest under cmake.
+#
+# Both run purely through the external-transport callbacks over in-memory byte
+# queues — no socket, no server. The server-gated tests (which need
+# tests/setup.local + a live SMB server) self-skip in CI.
+
+name: CI
+
+on: [push, pull_request]
+
+# Least privilege: this workflow only checks out and builds; it needs no write
+# scopes on the repository token.
+permissions:
+  contents: read
+
+jobs:
+  cmake:
+    name: cmake mock test (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        # cmake + a C compiler. gcc is preinstalled on ubuntu-latest; clang is
+        # pulled in explicitly so the matrix leg is self-contained.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+      - name: Configure (no krb5/gssapi/examples, tests on)
+        run: >
+          cmake -S . -B build
+          -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF
+          -DENABLE_EXAMPLES=OFF -DENABLE_TESTS=ON
+      - name: Build
+        run: cmake --build build
+      - name: Run only the network-free transport tests
+        # Only the network-free tests (mock_inmemory + external_exchange_inmemory)
+        # are registered as CTests; the regex pins them explicitly so a future
+        # server-gated CTest cannot accidentally run here.
+        run: >
+          ctest --test-dir build
+          -R 'mock_inmemory|external_exchange_inmemory'
+          --output-on-failure
+
+  autotools:
+    name: autotools mock test (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        # The autotools bootstrap needs autoconf/automake/libtool; the build
+        # needs make + the selected compiler (gcc preinstalled, clang explicit).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool make clang
+      - name: Bootstrap
+        run: sh ./bootstrap
+      - name: Configure
+        run: ./configure --without-libkrb5
+      - name: Build library
+        run: make
+      - name: Build the in-memory transport tests
+        run: make -C tests prog_mock prog_external_exchange
+      - name: Run the negotiate-only in-memory mock test
+        run: cd tests && sh ./test_0600_mock_inmemory.sh
+      - name: Run the headline full-exchange in-memory test
+        # test_external_transport.sh always runs its --inmemory leg and self-skips
+        # its tcp leg when tests/setup.local is absent (no live server in CI).
+        run: cd tests && sh ./test_external_transport.sh
