@@ -1,7 +1,12 @@
-# Network-free transport-decoupling CI (preview / dormant).
+# libsmb2 CI for the simplekube-ro / RandomPlayer transport-abstraction fork.
 #
-# This workflow builds libsmb2 under BOTH build systems and runs ONLY the
-# network-free transport tests:
+# Scope: this fork is consumed by RandomPlayer on Apple OSes; CI runs on Linux
+# (GitHub-hosted ubuntu runners) as the build/test proxy. We intentionally do
+# NOT carry upstream's console/handheld build matrix (PS2/Vita/PS3/PS4/Switch/
+# 3DS/Wii/WiiU/GameCube/DS/Amiga/...) — those are irrelevant to our use case.
+#
+# It builds libsmb2 under BOTH build systems (autotools + CMake, gcc + clang)
+# and runs ONLY the network-free transport-decoupling tests:
 #
 #   * the negotiate-only in-memory mock (tests/prog_mock /
 #     test_0600_mock_inmemory.sh under autotools; the `mock_inmemory` CTest
@@ -11,15 +16,10 @@
 #     `external_exchange_inmemory` CTest under cmake.
 #
 # Both run purely through the external-transport callbacks over in-memory byte
-# queues -- no socket, no server. It never runs the server-gated tests (those
-# need tests/setup.local + a live SMB server); test_external_transport.sh
-# self-skips its tcp leg when no setup.local is present.
-#
-# NOTE: GitHub Actions is currently disabled on this fork, so this workflow is
-# delivered as reviewed-but-dormant YAML and has NOT been exercised in CI. It is
-# the preview of the wiring finalized in issue #16; do not treat it as CI-green.
+# queues — no socket, no server. The server-gated tests (which need
+# tests/setup.local + a live SMB server) self-skip in CI.
 
-name: transport-mock (network-free)
+name: CI
 
 on: [push, pull_request]
 
