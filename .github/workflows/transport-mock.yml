@@ -1,9 +1,19 @@
 # Network-free transport-decoupling CI (preview / dormant).
 #
 # This workflow builds libsmb2 under BOTH build systems and runs ONLY the
-# network-free in-memory mock test (tests/prog_mock / test_0600_mock_inmemory.sh
-# under autotools; the `mock_inmemory` CTest under cmake). It never runs the
-# server-gated tests (those need tests/setup.local + a live SMB server).
+# network-free transport tests:
+#
+#   * the negotiate-only in-memory mock (tests/prog_mock /
+#     test_0600_mock_inmemory.sh under autotools; the `mock_inmemory` CTest
+#     under cmake), and
+#   * the headline full-exchange in-memory test (#15): prog_external_exchange
+#     --inmemory / test_external_transport.sh under autotools; the
+#     `external_exchange_inmemory` CTest under cmake.
+#
+# Both run purely through the external-transport callbacks over in-memory byte
+# queues -- no socket, no server. It never runs the server-gated tests (those
+# need tests/setup.local + a live SMB server); test_external_transport.sh
+# self-skips its tcp leg when no setup.local is present.
 #
 # NOTE: GitHub Actions is currently disabled on this fork, so this workflow is
 # delivered as reviewed-but-dormant YAML and has NOT been exercised in CI. It is
@@ -31,8 +41,14 @@ jobs:
           -DENABLE_EXAMPLES=OFF -DENABLE_TESTS=ON
       - name: Build
         run: cmake --build build
-      - name: Run only the network-free mock test
-        run: ctest --test-dir build -R mock_inmemory --output-on-failure
+      - name: Run only the network-free transport tests
+        # Only the network-free tests (mock_inmemory + external_exchange_inmemory)
+        # are registered as CTests; the regex pins them explicitly so a future
+        # server-gated CTest cannot accidentally run here.
+        run: >
+          ctest --test-dir build
+          -R 'mock_inmemory|external_exchange_inmemory'
+          --output-on-failure
 
   autotools:
     name: autotools mock test (${{ matrix.cc }})
@@ -50,7 +66,11 @@ jobs:
         run: ./configure --without-libkrb5
       - name: Build library
         run: make
-      - name: Build the in-memory mock test
-        run: make -C tests prog_mock
-      - name: Run only the network-free mock test
+      - name: Build the in-memory transport tests
+        run: make -C tests prog_mock prog_external_exchange
+      - name: Run the negotiate-only in-memory mock test
         run: cd tests && sh ./test_0600_mock_inmemory.sh
+      - name: Run the headline full-exchange in-memory test
+        # test_external_transport.sh always runs its --inmemory leg and self-skips
+        # its tcp leg when tests/setup.local is absent (no live server in CI).
+        run: cd tests && sh ./test_external_transport.sh
