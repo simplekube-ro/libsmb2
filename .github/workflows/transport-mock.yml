@@ -1,0 +1,56 @@
+# Network-free transport-decoupling CI (preview / dormant).
+#
+# This workflow builds libsmb2 under BOTH build systems and runs ONLY the
+# network-free in-memory mock test (tests/prog_mock / test_0600_mock_inmemory.sh
+# under autotools; the `mock_inmemory` CTest under cmake). It never runs the
+# server-gated tests (those need tests/setup.local + a live SMB server).
+#
+# NOTE: GitHub Actions is currently disabled on this fork, so this workflow is
+# delivered as reviewed-but-dormant YAML and has NOT been exercised in CI. It is
+# the preview of the wiring finalized in issue #16; do not treat it as CI-green.
+
+name: transport-mock (network-free)
+
+on: [push, pull_request]
+
+jobs:
+  cmake:
+    name: cmake mock test (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (no krb5/gssapi/examples, tests on)
+        run: >
+          cmake -S . -B build
+          -DENABLE_LIBKRB5=OFF -DENABLE_GSSAPI=OFF
+          -DENABLE_EXAMPLES=OFF -DENABLE_TESTS=ON
+      - name: Build
+        run: cmake --build build
+      - name: Run only the network-free mock test
+        run: ctest --test-dir build -R mock_inmemory --output-on-failure
+
+  autotools:
+    name: autotools mock test (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootstrap
+        run: sh ./bootstrap
+      - name: Configure
+        run: ./configure --without-libkrb5
+      - name: Build library
+        run: make
+      - name: Build the in-memory mock test
+        run: make -C tests prog_mock
+      - name: Run only the network-free mock test
+        run: cd tests && sh ./test_0600_mock_inmemory.sh

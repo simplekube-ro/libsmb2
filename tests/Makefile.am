@@ -8,9 +8,13 @@ noinst_PROGRAMS = prog_ls prog_mkdir prog_rmdir prog_cat \
 	prog_cat_cancel smb2-dcerpc-coder-test
 noinst_PROGRAMS += metastat-0202-censored
 noinst_PROGRAMS += prog_ls_external
+noinst_PROGRAMS += prog_mock
 
 prog_ls_external_SOURCES = prog_ls_external.c \
 	external_tcp_transport.c external_tcp_transport.h
+
+prog_mock_SOURCES = prog_mock.c \
+	mock_transport.c mock_transport.h recorded_exchange.h
 
 EXTRA_PROGRAMS = ld_sockerr
 CLEANFILES = ld_sockerr.o ld_sockerr.so
