@@ -87,6 +87,23 @@ struct mock_transport {
         int      sent_negotiate_rep;/* staged the NEGOTIATE reply        */
         int      saw_session_setup; /* parsed a SESSION_SETUP request    */
         unsigned long pdus_seen;    /* complete request PDUs parsed      */
+
+        /*
+         * Full-exchange (#15) state + observation flags. The two-step
+         * SESSION_SETUP and QUERY_DIRECTORY commands need a per-command step
+         * counter (interim vs final / entries vs no-more-files); everything
+         * else is keyed on Command alone. The saw_* flags let the test assert
+         * the engine drove every stage of connect_share + opendir + teardown
+         * purely through the callbacks.
+         */
+        int      session_setup_step;  /* 0 = interim challenge, 1 = success */
+        int      query_dir_step;      /* 0 = entries, 1 = no-more-files     */
+        int      saw_tree_connect;    /* parsed a TREE_CONNECT request      */
+        int      saw_create;          /* parsed a CREATE request            */
+        int      saw_query_directory; /* parsed a QUERY_DIRECTORY request   */
+        int      saw_close;           /* parsed a CLOSE request             */
+        int      saw_tree_disconnect; /* parsed a TREE_DISCONNECT request   */
+        int      saw_logoff;          /* parsed a LOGOFF request            */
 };
 
 /*

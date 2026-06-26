@@ -162,15 +162,91 @@ mock_handle_request(struct mock_transport *m, const uint8_t *msg, size_t msg_len
                 break;
         case SMB2_SESSION_SETUP:
                 /*
-                 * Reaching here proves the engine parsed our crafted NEGOTIATE
-                 * reply and advanced its state machine to emit a SESSION_SETUP
-                 * request (carrying an NTLMSSP type-1 token). Completing the
-                 * authenticated SESSION_SETUP / TREE_CONNECT drive-through is
-                 * the job of the dependent live/full-exchange work (#15); we
-                 * deliberately stage no reply here, so the caller's bounded
-                 * pump loop stops once this is observed.
+                 * NTLM is a two-step flow. The first SESSION_SETUP carries the
+                 * client's NTLMSSP type-1 token; we answer with an interim
+                 * reply (MORE_PROCESSING_REQUIRED + a canned type-2 challenge).
+                 * The engine then emits a second SESSION_SETUP (type-3), which
+                 * we answer with an unconditional success. We never validate
+                 * the client's response -- with signing off the engine never
+                 * confirms the session key either, so the credential path
+                 * completes deterministically.
                  */
                 m->saw_session_setup = 1;
+                if (m->session_setup_step == 0) {
+                        if (mock_stage_reply(m,
+                                     mock_session_setup_interim_reply,
+                                     sizeof(mock_session_setup_interim_reply),
+                                     msg_id8) < 0) {
+                                return -1;
+                        }
+                        m->session_setup_step = 1;
+                } else {
+                        if (mock_stage_reply(m,
+                                     mock_session_setup_final_reply,
+                                     sizeof(mock_session_setup_final_reply),
+                                     msg_id8) < 0) {
+                                return -1;
+                        }
+                }
+                break;
+        case SMB2_TREE_CONNECT:
+                m->saw_tree_connect = 1;
+                if (mock_stage_reply(m, mock_tree_connect_reply,
+                                     sizeof(mock_tree_connect_reply),
+                                     msg_id8) < 0) {
+                        return -1;
+                }
+                break;
+        case SMB2_CREATE:
+                m->saw_create = 1;
+                if (mock_stage_reply(m, mock_create_reply,
+                                     sizeof(mock_create_reply), msg_id8) < 0) {
+                        return -1;
+                }
+                break;
+        case SMB2_QUERY_DIRECTORY:
+                /*
+                 * First query returns the crafted directory entries; the engine
+                 * then asks for more, which we answer with NO_MORE_FILES so it
+                 * closes the handle and finishes the listing.
+                 */
+                m->saw_query_directory = 1;
+                if (m->query_dir_step == 0) {
+                        if (mock_stage_reply(m, mock_query_dir_reply,
+                                     sizeof(mock_query_dir_reply),
+                                     msg_id8) < 0) {
+                                return -1;
+                        }
+                        m->query_dir_step = 1;
+                } else {
+                        if (mock_stage_reply(m, mock_query_dir_nomore_reply,
+                                     sizeof(mock_query_dir_nomore_reply),
+                                     msg_id8) < 0) {
+                                return -1;
+                        }
+                }
+                break;
+        case SMB2_CLOSE:
+                m->saw_close = 1;
+                if (mock_stage_reply(m, mock_close_reply,
+                                     sizeof(mock_close_reply), msg_id8) < 0) {
+                        return -1;
+                }
+                break;
+        case SMB2_TREE_DISCONNECT:
+                m->saw_tree_disconnect = 1;
+                if (mock_stage_reply(m, mock_tree_disconnect_reply,
+                                     sizeof(mock_tree_disconnect_reply),
+                                     msg_id8) < 0) {
+                        return -1;
+                }
+                break;
+        case SMB2_LOGOFF:
+                m->saw_logoff = 1;
+                if (mock_stage_reply(m, mock_logoff_reply,
+                                     sizeof(mock_logoff_reply), msg_id8) < 0) {
+                        return -1;
+                }
                 break;
         default:
                 break;
