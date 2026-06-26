@@ -23,6 +23,11 @@ name: transport-mock (network-free)
 
 on: [push, pull_request]
 
+# Least privilege: this workflow only checks out and builds; it needs no write
+# scopes on the repository token.
+permissions:
+  contents: read
+
 jobs:
   cmake:
     name: cmake mock test (${{ matrix.cc }})
@@ -34,6 +39,12 @@ jobs:
       CC: ${{ matrix.cc }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install build tools
+        # cmake + a C compiler. gcc is preinstalled on ubuntu-latest; clang is
+        # pulled in explicitly so the matrix leg is self-contained.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
       - name: Configure (no krb5/gssapi/examples, tests on)
         run: >
           cmake -S . -B build
@@ -60,6 +71,12 @@ jobs:
       CC: ${{ matrix.cc }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install build tools
+        # The autotools bootstrap needs autoconf/automake/libtool; the build
+        # needs make + the selected compiler (gcc preinstalled, clang explicit).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool make clang
       - name: Bootstrap
         run: sh ./bootstrap
       - name: Configure
