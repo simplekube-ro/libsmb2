@@ -262,12 +262,25 @@ ext_queue_write(struct smb2_context *smb2, const struct iovec *iov, int niov)
  * Tear down the external transport via the application close callback. A NULL
  * close callback is a no-op success. No real file descriptor is ever closed;
  * the fd field is reset to the invalid sentinel for hygiene only.
+ *
+ * Once-semantics: both the close callback pointer and userdata are cleared
+ * before the callback is invoked. This prevents a use-after-free when
+ * smb2_destroy_context() fires ext_close() directly at the top of
+ * smb2_destroy_context(), and then one of the in-flight PDU callbacks (e.g.
+ * negotiate_cb) calls smb2_close_context() -> ext_close() a second time
+ * within the same waitqueue-drain loop. The first call fires and nulls the
+ * pointers; the second call sees a NULL close pointer and returns immediately.
  */
 static int
 ext_close(struct smb2_context *smb2)
 {
         if (smb2->ext.close) {
-                smb2->ext.close(smb2->ext.userdata);
+                int (*close_fn)(void *) = smb2->ext.close;
+                void *userdata = smb2->ext.userdata;
+                /* Clear before calling to prevent re-entrant double-close. */
+                smb2->ext.close    = NULL;
+                smb2->ext.userdata = NULL;
+                close_fn(userdata);
         }
         smb2->ext_connected = 0;
         smb2->fd = SMB2_INVALID_SOCKET;
