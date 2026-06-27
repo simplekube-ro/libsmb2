@@ -38,7 +38,7 @@ jobs:
     env:
       CC: ${{ matrix.cc }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build tools
         # cmake + a C compiler. gcc is preinstalled on ubuntu-latest; clang is
         # pulled in explicitly so the matrix leg is self-contained.
@@ -70,7 +70,7 @@ jobs:
     env:
       CC: ${{ matrix.cc }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install build tools
         # The autotools bootstrap needs autoconf/automake/libtool; the build
         # needs make + the selected compiler (gcc preinstalled, clang explicit).
