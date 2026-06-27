@@ -933,6 +933,19 @@ smb2_recv_from_ext(struct smb2_context *smb2, const struct iovec *iov,
         size_t want;
         int ret;
 
+        if (!smb2->ext_connected) {
+                /* The application transport has already been torn down
+                 * (ext_close cleared ext_connected). The receive drain loop in
+                 * smb2_read_from_ext can still drive one trailing read during
+                 * teardown -- e.g. a disconnect/logoff reply whose callback runs
+                 * ext_close() mid-read. Never invoke the application recv
+                 * callback on a closed transport: the handle behind ext.userdata
+                 * may already have been freed by the close callback. Report
+                 * would-block so the drain loop stops cleanly, exactly as an
+                 * empty non-blocking socket would. */
+                errno = EAGAIN;
+                return -1;
+        }
         if (smb2->ext.recv == NULL) {
                 errno = EINVAL;
                 return -1;

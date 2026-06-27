@@ -209,6 +209,16 @@ ext_queue_write(struct smb2_context *smb2, const struct iovec *iov, int niov)
         ssize_t total = 0;
         int i;
 
+        if (!smb2->ext_connected) {
+                /* Symmetric with smb2_recv_from_ext(): never drive the
+                 * application send callback after the transport has been closed
+                 * (ext_close cleared ext_connected). The handle behind
+                 * ext.userdata may have been freed by the close callback. Report
+                 * would-block; smb2_write_to_socket treats EAGAIN as a clean
+                 * no-op, mirroring a non-blocking socket. */
+                errno = EAGAIN;
+                return -1;
+        }
         if (smb2->ext.send == NULL) {
                 errno = EINVAL;
                 return -1;
@@ -263,13 +273,27 @@ ext_queue_write(struct smb2_context *smb2, const struct iovec *iov, int niov)
  * close callback is a no-op success. No real file descriptor is ever closed;
  * the fd field is reset to the invalid sentinel for hygiene only.
  *
- * Once-semantics: both the close callback pointer and userdata are cleared
- * before the callback is invoked. This prevents a use-after-free when
- * smb2_destroy_context() fires ext_close() directly at the top of
- * smb2_destroy_context(), and then one of the in-flight PDU callbacks (e.g.
- * negotiate_cb) calls smb2_close_context() -> ext_close() a second time
- * within the same waitqueue-drain loop. The first call fires and nulls the
- * pointers; the second call sees a NULL close pointer and returns immediately.
+ * Once-semantics: the close callback pointer is cleared before the callback is
+ * invoked. This prevents a use-after-free when smb2_destroy_context() fires
+ * ext_close() directly at the top of smb2_destroy_context(), and then one of
+ * the in-flight PDU callbacks (e.g. negotiate_cb) calls smb2_close_context() ->
+ * ext_close() a second time within the same waitqueue-drain loop. The first
+ * call fires and nulls the close pointer; the second call sees a NULL close
+ * pointer and returns immediately without invoking the callback again.
+ *
+ * userdata is intentionally left untouched here. It is the application's
+ * transport handle and is also consumed by the recv/send leaves (see
+ * smb2_recv_from_ext() and ext_queue_write()). ext_close does not own or free
+ * the handle, so leaving it live cannot reintroduce the double-close: the second
+ * ext_close never reaches close_fn because the close pointer is already NULL.
+ *
+ * The receive drain loop can still drive one trailing recv/send during the same
+ * teardown after close fires (e.g. a disconnect/logoff reply whose callback runs
+ * ext_close() mid-read). ext_close clears ext_connected to 0, and both transport
+ * I/O leaves refuse to invoke the application callback when !ext_connected,
+ * returning EAGAIN instead. That keeps the trailing read benign without relying
+ * on the application's handle surviving its own close callback (an app that
+ * frees the handle in close must not have its recv/send invoked afterwards).
  */
 static int
 ext_close(struct smb2_context *smb2)
@@ -278,8 +302,7 @@ ext_close(struct smb2_context *smb2)
                 int (*close_fn)(void *) = smb2->ext.close;
                 void *userdata = smb2->ext.userdata;
                 /* Clear before calling to prevent re-entrant double-close. */
-                smb2->ext.close    = NULL;
-                smb2->ext.userdata = NULL;
+                smb2->ext.close = NULL;
                 close_fn(userdata);
         }
         smb2->ext_connected = 0;
